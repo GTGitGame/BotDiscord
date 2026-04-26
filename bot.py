@@ -1,8 +1,11 @@
 import discord
 import os
 from dotenv import load_dotenv
+from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
 from discord.ext import commands
+keep_alive()  # Lance le serveur web
 load_dotenv()
+
 
 print("Lancement du  bot...")
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
