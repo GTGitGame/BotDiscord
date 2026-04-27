@@ -36,7 +36,7 @@ async def on_message(message: discord.Message):
         await welcom_channel.send("Bienvenue sur le serveur discord !")
 
 @bot.tree.command(name="test", description="Test des embeds")
-async def warnguy(interaction: discord.Interaction, member: discord.Member):
+async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
         title="Test Title",
         description="Description de l'embed",
@@ -56,7 +56,7 @@ async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await member.send("Tu as reçu une alerte")
 
 @bot.tree.command(name="banguy", description="Alerter une personne")
-async def warnguy(interaction: discord.Interaction, member: discord.Member):
+async def banguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Ban envoyé !")
     await member.ban(reason="Tu n'es pas abonné")
     await member.send("Tu as été Banni")
