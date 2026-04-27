@@ -9,13 +9,12 @@ def home():
     return "Le bot est en ligne !"
 
 def run():
+    # Utilise le port 10000 exigé par Render
     port = int(os.environ.get("PORT", 10000))
-    # On ajoute threaded=True pour plus de sécurité
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    # On s'assure que le thread est bien lancé en arrière-plan
+    # C'EST CETTE LIGNE QUI DÉBLOQUE TOUT :
+    # On lance 'run' dans un thread séparé pour libérer le script principal
     t = Thread(target=run)
     t.start()
-    print("Serveur de monitoring lancé !")
-
