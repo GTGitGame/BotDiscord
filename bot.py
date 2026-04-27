@@ -35,6 +35,21 @@ async def on_message(message: discord.Message):
         welcom_channel = bot.get_channel(1497967954950623272)
         await welcom_channel.send("Bienvenue sur le serveur discord !")
 
+def has_any_role_ids(role_ids_list):
+    async def predicate(interaction: discord.Interaction):
+        # On vérifie si l'un des IDs de l'utilisateur correspond à la liste autorisée
+        user_role_ids = [role.id for role in interaction.user.roles]
+        
+        if any(role_id in user_role_ids for role_id in role_ids_list):
+            return True
+        
+        await interaction.response.send_message(
+            "🚫 Tu n'as pas le grade requis pour utiliser cette commande.", 
+            ephemeral=True
+        )
+        return False
+    return discord.app_commands.check(predicate)
+
 @bot.tree.command(name="test", description="Test des embeds")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
@@ -56,6 +71,7 @@ async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await member.send("Tu as reçu une alerte")
 
 @bot.tree.command(name="banguy", description="Alerter une personne")
+@has_role_id(123456789012345678)
 async def banguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Ban envoyé !")
     await member.ban(reason="Tu n'es pas abonné")
@@ -77,7 +93,7 @@ async def on_member_join(member):
 async def hack_switch(interaction: discord.Interaction):
     # Récupérer le channel par ID
     channel = bot.get_channel(1497967551496458322)
-    
+
     if channel is None:
         await interaction.response.send_message("Le salon spécifié est introuvable.", ephemeral=True)
         return
@@ -156,6 +172,12 @@ async def on_reaction_add(reaction, user):
         except discord.Forbidden:
             print(f"Impossible d'envoyer un MP à {member_to_notify}")
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    if isinstance(error, discord.app_commands.CheckFailure):
+        # L'erreur est déjà gérée par le message dans le predicate, on ne fait rien
+        return
+    print(f"Erreur non gérée : {error}")
 
 
 bot.run(os.getenv('DISCORD_TOKEN'))
