@@ -114,7 +114,7 @@ async def on_member_join(member):
         # Envoyer un message de bienvenue personnalisé
         await channel.send(f'Bienvenue sur le serveur, {member.mention} ! 🎉')
 
-@bot.tree.command(name="hack_Switch", description="Retrouvez l'endroit où se trouve les docs + Tuto sur hack_Switch")
+@bot.tree.command(name="hack_switch", description="Retrouvez l'endroit où se trouve les docs + Tuto sur hack_Switch")
 async def hack_switch(interaction: discord.Interaction):
     # Récupérer le channel par ID
     channel = bot.get_channel(1497967551496458322)
