@@ -1,7 +1,6 @@
 import discord
 import os
 import asyncio
-import json
 import datetime
 import psycopg2
 from dotenv import load_dotenv
@@ -9,6 +8,25 @@ from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
 from discord.ext import commands
 keep_alive()  # Lance le serveur web
 load_dotenv()
+
+# --- CONFIGURATION ET INITIALISATION BDD ---
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+def init_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    # Table des avertissements
+    cur.execute('''CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
+    # Table de l'historique des bans
+    cur.execute('''CREATE TABLE IF NOT EXISTS bans (id SERIAL PRIMARY KEY, user_name TEXT, reason TEXT, proof TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    # Table des mots interdits (ta liste noire)
+    cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# On appelle la fonction IMMÉDIATEMENT pour que les tables soient prêtes
+init_db()
 
 
 print("Lancement du  bot...")
@@ -29,50 +47,44 @@ async def on_ready():
 async def on_message(message: discord.Message):
     if message.author.bot: return
 
-    content = message.content.lower()
-    if any(word in content for word in BANNED_WORDS):
-        await message.delete()
-        
-        data = load_data()
-        user_id = str(message.author.id)
-        
-        # Gestion des warns
-        data["warnings"][user_id] = data["warnings"].get(user_id, 0) + 1
-        count = data["warnings"][user_id]
-        
-        if count >= 3:
-            # Enregistrement du ban dans l'historique
-            ban_info = {
-                "user": f"{message.author.name}#{message.author.discriminator}",
-                "reason": "3 avertissements (Automod)",
-                "date": str(datetime.datetime.now()),
-                "proof": f"Dernier message : {message.content}"
-            }
-            data["bans_history"].append(ban_info)
-            data["warnings"][user_id] = 0 # Reset
-            
-            save_data(data)
-            await message.author.ban(reason=ban_info["reason"])
-            await message.channel.send(f"🚨 {message.author.mention} banni pour accumulation d'infractions.")
-        else:
-            save_data(data)
-            await message.channel.send(f"⚠️ {message.author.mention}, attention aux insultes ! ({count}/3)")
-
-    await bot.process_commands(message)
-
-
-DATABASE_URL = os.getenv('DATABASE_URL')
-
-def init_db():
+    # --- 1. RÉCUPÉRER LES INSULTES DEPUIS LA BDD ---
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS bans (id SERIAL PRIMARY KEY, user_name TEXT, reason TEXT, proof TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
+    
+    cur.execute("SELECT word FROM banned_words")
+    # On transforme le résultat en une liste simple de mots
+    mots_interdits = [row[0] for row in cur.fetchall()]
+    
+    content = message.content.lower()
+
+    # --- 2. VÉRIFICATION ---
+    if any(word in content for word in mots_interdits):
+        await message.delete()
+        user_id = str(message.author.id)
+        
+        # --- 3. GESTION DES WARNS DANS LA BDD ---
+        cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
+                       ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
+                       RETURNING count''', (user_id,))
+        
+        count = cur.fetchone()[0]
+        
+        if count >= 3:
+            # Enregistrement du ban et reset
+            cur.execute("INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)", 
+                        (message.author.name, "3 avertissements", message.content))
+            cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
+            conn.commit()
+            
+            await message.author.ban(reason="3 avertissements (Automod)")
+            await message.channel.send(f"🚨 {message.author.mention} banni pour accumulation d'infractions.")
+        else:
+            conn.commit()
+            await message.channel.send(f"⚠️ {message.author.mention}, attention ! ({count}/3)")
+    
     cur.close()
     conn.close()
-
-init_db() # À appeler avant le lancement du bot
+    await bot.process_commands(message)
 
 @bot.tree.command(name="test", description="Test des embeds")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
@@ -128,6 +140,20 @@ async def hack_switch(interaction: discord.Interaction):
         "⚠️ Attention: Rappel: A suivre étape par étape sinon risque de Brick (Rendre la console Inutilisable) ⚠️ A vos risques et périls ..."
     )
 
+@bot.tree.command(name="add_insulte", description="Ajouter un mot à la liste noire")
+@discord.app_commands.default_permissions(administrator=True)
+async def add_insulte(interaction: discord.Interaction, mot: str):
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO banned_words (word) VALUES (%s) ON CONFLICT DO NOTHING", (mot.lower(),))
+        conn.commit()
+        await interaction.response.send_message(f"✅ Le mot `{mot}` est maintenant interdit.")
+    except Exception as e:
+        await interaction.response.send_message(f"Erreur : {e}")
+    finally:
+        cur.close()
+        conn.close()
 
 @bot.tree.command(name="verification", description="Une commande pour obtenir le grade de membre Certifié")
 async def verif(interaction: discord.Interaction, member: discord.Member):
@@ -172,7 +198,7 @@ async def on_reaction_add(reaction, user):
     member_to_notify = reaction.message.mentions[0]
 
     # Récupérer le rôle à attribuer (exemple : rôle "Certifié")
-    role_to_add = discord.utils.get(user.guild.roles, name="Membre Certifié")
+    role_to_add = user.guild.get_role(1497970323096735785) # Utilise l'ID que tu as déjà
 
     if str(reaction.emoji) == "✅":
         # Envoyer MP de bienvenue
@@ -190,12 +216,12 @@ async def on_reaction_add(reaction, user):
             except Exception as e:
                 print(f"Erreur lors de l'ajout du rôle : {e}")
 
-    elif str(reaction.emoji) == "❌":
-        # Envoyer MP de refus
-        try:
-            await member_to_notify.send("Désolé, votre demande pour devenir Membre Certifié a été refusée.")
-        except discord.Forbidden:
-            print(f"Impossible d'envoyer un MP à {member_to_notify}")
+        elif str(reaction.emoji) == "❌":
+            try:
+                await member_to_notify.send("Désolé, votre demande a été refusée.")
+            except discord.Forbidden:
+                pass
+
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
@@ -279,5 +305,13 @@ async def history(interaction: discord.Interaction):
             inline=False
         )
     await interaction.response.send_message(embed=embed)
+
+# --- GESTION DES ERREURS DE COMMANDES ---
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
+    if isinstance(error, discord.app_commands.CheckFailure):
+        await interaction.response.send_message("Tu n'as pas la permission d'utiliser cette commande.", ephemeral=True)
+    else:
+        print(f"Erreur : {error}")
 
 bot.run(os.getenv('DISCORD_TOKEN'))
