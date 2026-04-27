@@ -73,10 +73,11 @@ async def on_member_join(member):
         # Envoyer un message de bienvenue personnalisé
         await channel.send(f'Bienvenue sur le serveur, {member.mention} ! 🎉')
 
-@bot.tree.command(name="Hack_Switch", description="Retrouvez l'endroit où se trouve les docs + Tuto sur Hack_Switch")
+@bot.tree.command(name="hack_Switch", description="Retrouvez l'endroit où se trouve les docs + Tuto sur hack_Switch")
 async def hack_switch(interaction: discord.Interaction):
     # Récupérer le channel par ID
     channel = bot.get_channel(1497967551496458322)
+    
     if channel is None:
         await interaction.response.send_message("Le salon spécifié est introuvable.", ephemeral=True)
         return
@@ -87,7 +88,7 @@ async def hack_switch(interaction: discord.Interaction):
     )
 
 
-@bot.tree.command(name="Vérification", description="Une commande pour obtenir le grade de membre Certifié")
+@bot.tree.command(name="verification", description="Une commande pour obtenir le grade de membre Certifié")
 async def verif(interaction: discord.Interaction, member: discord.Member):
     role_id = 1497970323096735785
     role_mention = f"<@&{role_id}>"
