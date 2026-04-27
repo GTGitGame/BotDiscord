@@ -50,12 +50,12 @@ async def warnguy(interaction: discord.Interaction, member: discord.Member):
 
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="Warnguy", description="Alerter une personne")
+@bot.tree.command(name="warnguy", description="Alerter une personne")
 async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Alerte envoyé !")
     await member.send("Tu as reçu une alerte")
 
-@bot.tree.command(name="Banguy", description="Alerter une personne")
+@bot.tree.command(name="banguy", description="Alerter une personne")
 async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Ban envoyé !")
     await member.ban(reason="Tu n'es pas abonné")
