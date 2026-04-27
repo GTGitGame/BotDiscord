@@ -1,5 +1,9 @@
 import discord
 import os
+import asyncio
+import json
+import datetime
+import psycopg2
 from dotenv import load_dotenv
 from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
 from discord.ext import commands
@@ -23,32 +27,52 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    # empecher auto déclenchement
-    if message.author.bot:
-        return
-    
-    if message.content.lower() == 'bonjour':
-        channel = message.channel
-        author = message.author
-        await author.send("Comment tu vas ?")
-    if message.content.lower() == "bienvenue":
-        welcom_channel = bot.get_channel(1497967954950623272)
-        await welcom_channel.send("Bienvenue sur le serveur discord !")
+    if message.author.bot: return
 
-def has_any_role_ids(role_ids_list):
-    async def predicate(interaction: discord.Interaction):
-        # On vérifie si l'un des IDs de l'utilisateur correspond à la liste autorisée
-        user_role_ids = [role.id for role in interaction.user.roles]
+    content = message.content.lower()
+    if any(word in content for word in BANNED_WORDS):
+        await message.delete()
         
-        if any(role_id in user_role_ids for role_id in role_ids_list):
-            return True
+        data = load_data()
+        user_id = str(message.author.id)
         
-        await interaction.response.send_message(
-            "🚫 Tu n'as pas le grade requis pour utiliser cette commande.", 
-            ephemeral=True
-        )
-        return False
-    return discord.app_commands.check(predicate)
+        # Gestion des warns
+        data["warnings"][user_id] = data["warnings"].get(user_id, 0) + 1
+        count = data["warnings"][user_id]
+        
+        if count >= 3:
+            # Enregistrement du ban dans l'historique
+            ban_info = {
+                "user": f"{message.author.name}#{message.author.discriminator}",
+                "reason": "3 avertissements (Automod)",
+                "date": str(datetime.datetime.now()),
+                "proof": f"Dernier message : {message.content}"
+            }
+            data["bans_history"].append(ban_info)
+            data["warnings"][user_id] = 0 # Reset
+            
+            save_data(data)
+            await message.author.ban(reason=ban_info["reason"])
+            await message.channel.send(f"🚨 {message.author.mention} banni pour accumulation d'infractions.")
+        else:
+            save_data(data)
+            await message.channel.send(f"⚠️ {message.author.mention}, attention aux insultes ! ({count}/3)")
+
+    await bot.process_commands(message)
+
+
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+def init_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute('''CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
+    cur.execute('''CREATE TABLE IF NOT EXISTS bans (id SERIAL PRIMARY KEY, user_name TEXT, reason TEXT, proof TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    cur.close()
+    conn.close()
+
+init_db() # À appeler avant le lancement du bot
 
 @bot.tree.command(name="test", description="Test des embeds")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
@@ -66,12 +90,13 @@ async def test_embed(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="warnguy", description="Alerter une personne")
+@discord.app_commands.default_permissions(ban_members=True) #Permission/rôle Requis(e) (ex: Modérateur)
 async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Alerte envoyé !")
     await member.send("Tu as reçu une alerte")
 
 @bot.tree.command(name="banguy", description="Alerter une personne")
-@has_role_id(123456789012345678)
+@discord.app_commands.default_permissions(ban_members=True)
 async def banguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Ban envoyé !")
     await member.ban(reason="Tu n'es pas abonné")
@@ -178,6 +203,81 @@ async def on_app_command_error(interaction: discord.Interaction, error: discord.
         # L'erreur est déjà gérée par le message dans le predicate, on ne fait rien
         return
     print(f"Erreur non gérée : {error}")
+# Dictionnaire pour stocker les avertissements {user_id: nombre_davertissements}
 
+# Liste des mots interdits (à compléter selon tes règles)
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    # 1. On vérifie d'abord s'il y a une infraction
+    content = message.content.lower()
+    if any(word in content for word in BANNED_WORDS):
+        await message.delete() # Optionnel : supprimer le message
+        
+        user_id = str(message.author.id) # Définition de l'ID
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+            
+        cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
+                           RETURNING count''', (user_id,))
+        count = cur.fetchone()[0] # Le [0] est important pour avoir le chiffre
+            
+        if count >= 3:
+            cur.execute("INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)", 
+                        (message.author.name, "3 avertissements", message.content))
+            cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
+            conn.commit()
+            await message.author.ban(reason="3 avertissements (Automod)")
+            await message.channel.send(f"🚨 {message.author.mention} banni (3/3 infractions).")
+        else:
+            conn.commit()
+            await message.channel.send(f"⚠️ {message.author.mention}, attention ! ({count}/3)")
+            
+        cur.close()
+        conn.close()
+
+    # Important pour les commandes "!"
+    await bot.process_commands(message)
+
+
+@bot.tree.command(name="tempban", description="Bannir un membre temporairement")
+@discord.app_commands.default_permissions(ban_members=True) # Réservé au Staff
+async def tempban(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Non spécifiée"):
+    await interaction.response.send_message(f"🔨 {member.mention} a été banni pour {minutes} minutes. Raison : {reason}")
+    
+    try:
+        await member.send(f"Tu as été banni de {interaction.guild.name} pendant {minutes} minutes pour : {reason}")
+        await member.ban(reason=reason)
+        
+        # Attendre la durée avant de débannir
+        await asyncio.sleep(minutes * 60)
+        
+        await interaction.guild.unban(member)
+        print(f"{member.name} a été débanni après {minutes} minutes.")
+    except Exception as e:
+        print(f"Erreur lors du tempban : {e}")
+
+@bot.tree.command(name="ban_history", description="Voir l'historique des bannissements")
+@discord.app_commands.default_permissions(administrator=True)
+async def history(interaction: discord.Interaction):
+    data = load_data()
+    history = data["bans_history"]
+    
+    if not history:
+        return await interaction.response.send_message("L'historique est vide.", ephemeral=True)
+    
+    embed = discord.Embed(title="📜 Historique des Bans", color=discord.Color.red())
+    # On affiche les 5 derniers pour ne pas surcharger
+    for entry in history[-5:]:
+        embed.add_field(
+            name=f"Utilisateur : {entry['user']}",
+            value=f"📅 Date: {entry['date']}\n📝 Raison: {entry['reason']}\n📂 Preuve: {entry['proof']}",
+            inline=False
+        )
+    await interaction.response.send_message(embed=embed)
 
 bot.run(os.getenv('DISCORD_TOKEN'))
