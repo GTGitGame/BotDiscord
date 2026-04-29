@@ -36,6 +36,7 @@ bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 @bot.event
 async def on_ready():
     print("Bat allumé !")
+    check_youtube.start()
     #synchroniser les commandes
     try:
         #sync (synced nom modifiable sans problème ATTENTION: Ne pas oubliez de remplacer dans ce cas.)
