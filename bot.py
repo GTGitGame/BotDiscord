@@ -119,11 +119,6 @@ async def youtube(interaction: discord.Interaction):
     await interaction.response.send_message("Voici le lien de ma chaine Youtube: https://www.youtube.com/@GTGame24")
 
 @bot.tree.command(name="IsaDraw", description="Affiche les Réseaux de la chaîne IsaDraw")
-async def youtube(interaction: discord.Interaction):
-    await interaction.response.send_message("Chaîne Youtube: (IsaDraw)[https://www.youtube.com/@Isa_Draw12] "
-    "Instagram: (isadraw12)[https://www.instagram.com/isadraw12]")
-
-@bot.tree.command(name="IsaDraw", description="Affiche les Réseaux de la chaîne IsaDraw")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
         title="Test Title",
