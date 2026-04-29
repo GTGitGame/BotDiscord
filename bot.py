@@ -118,10 +118,31 @@ async def banguy(interaction: discord.Interaction, member: discord.Member):
 async def youtube(interaction: discord.Interaction):
     await interaction.response.send_message("Voici le lien de ma chaine Youtube: https://www.youtube.com/@GTGame24")
 
+@bot.tree.command(name="IsaDraw", description="Affiche les Réseaux de la chaîne IsaDraw")
+async def youtube(interaction: discord.Interaction):
+    await interaction.response.send_message("Chaîne Youtube: (IsaDraw)[https://www.youtube.com/@Isa_Draw12] "
+    "Instagram: (isadraw12)[https://www.instagram.com/isadraw12]")
+
+@bot.tree.command(name="IsaDraw", description="Affiche les Réseaux de la chaîne IsaDraw")
+async def test_embed(interaction: discord.Interaction, member: discord.Member):
+    embed = discord.Embed(
+        title="Test Title",
+        description="Description de l'embed",
+        color=discord.Color.blue()
+    )
+    #embed.(...) field (paragraphe), footer (bas de message), image (inclure une image),
+    embed.add_field(name="Youtube", value=" (Isa Draw)[https://www.youtube.com/@Isa_Draw12]")
+    embed.set_image(url="https://yt3.googleusercontent.com/9pdUfE3u2IG761i4xxNTWoncrOd2CtFQ6OIGxpDSGLID7sz-dKUVZdhYr_ftyGDvTo8Ke_yMhzA=s160-c-k-c0x00ffffff-no-rj")
+    embed.add_field(name="Instagram", value=" (isadraw12)[https://www.instagram.com/isadraw12]")
+    embed.set_image(url="https://scontent-bru2-1.cdninstagram.com/v/t51.2885-19/456139773_389929840466717_6442151137807963536_n.jpg?stp=dst-jpg_s320x320_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=scontent-bru2-1.cdninstagram.com&_nc_cat=105&_nc_oc=Q6cZ2gFneQ8vm-QoLmYMSug7RtJnpPBbk4DCIScbNFoKQDREBqSYw7EbPdRgfFgYUW9mzDF-3SKNoPiAr19mdYwsJoP6&_nc_ohc=jiHojhwd-xAQ7kNvwHJg4h6&_nc_gid=6bQHGvRvYurNn8YeGRkogA&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Af1HysPV-7szyNxSxqB2wsn_xHQYD4vplmcmcUtre1jwjA&oe=69F804BB&_nc_sid=8b3546")
+    embed.set_footer(text="Chaîne de Dessin ✏️ !")
+
+    await interaction.response.send_message(embed=embed)
+
 @bot.event
 async def on_member_join(member):
     # Chercher un canal nommé 'bienvenue' dans la guild où le membre a rejoint
-    channel = discord.utils.get(member.guild.text_channels, name='bienvenue')
+    channel = discord.utils.get(member.guild.text_channels, name='👋bienvenue👋')
     if channel:
         # Envoyer un message de bienvenue personnalisé
         await channel.send(f'Bienvenue sur le serveur, {member.mention} ! 🎉')
@@ -220,15 +241,8 @@ async def on_reaction_add(reaction, user):
             try:
                 await member_to_notify.send("Désolé, votre demande a été refusée.")
             except discord.Forbidden:
-                pass
+                print(f"Erreur refus: {e}")
 
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
-    if isinstance(error, discord.app_commands.CheckFailure):
-        # L'erreur est déjà gérée par le message dans le predicate, on ne fait rien
-        return
-    print(f"Erreur non gérée : {error}")
 # Dictionnaire pour stocker les avertissements {user_id: nombre_davertissements}
 
 # Liste des mots interdits (à compléter selon tes règles)
