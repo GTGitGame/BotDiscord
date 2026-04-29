@@ -114,18 +114,6 @@ async def on_raw_reaction_remove(payload):
             await member.remove_roles(role)
             print(f"Rôle {role.name} retiré à {member}")
 
-@bot.command()
-async def setup_roles(ctx):
-    embed = discord.Embed(description="Réagis ici pour tes rôles...")
-    message = await ctx.send(embed=embed)
-    
-    # On met à jour l'ID global automatiquement pour ne pas avoir à le copier-coller
-    global CHOICE_MESSAGE_ID
-    CHOICE_MESSAGE_ID = message.id 
-    
-    for emoji in REACTION_ROLES.keys():
-        await message.add_reaction(emoji)
-
 # L'ID du message où les gens doivent cliquer
 CHOICE_MESSAGE_ID = 1499125527313776692
 
