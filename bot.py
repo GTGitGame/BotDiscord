@@ -118,11 +118,11 @@ async def banguy(interaction: discord.Interaction, member: discord.Member):
 async def youtube(interaction: discord.Interaction):
     await interaction.response.send_message("Voici le lien de ma chaine Youtube: https://www.youtube.com/@GTGame24")
 
-@bot.tree.command(name="IsaDraw", description="Affiche les Réseaux de la chaîne IsaDraw")
+@bot.tree.command(name="isadraw", description="Affiche les Réseaux de la chaîne IsaDraw")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
-        title="Test Title",
-        description="Description de l'embed",
+        title="IsaDraw",
+        description="Découvrez les réseaux sociaux de Osa",
         color=discord.Color.blue()
     )
     #embed.(...) field (paragraphe), footer (bas de message), image (inclure une image),
