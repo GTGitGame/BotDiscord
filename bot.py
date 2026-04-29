@@ -9,7 +9,6 @@ from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
 from discord.ext import commands, tasks
 keep_alive()  # Lance le serveur web
 load_dotenv()
-check_youtube.start()
 
 # --- CONFIGURATION ET INITIALISATION BDD ---
 DATABASE_URL = os.getenv('DATABASE_URL')
