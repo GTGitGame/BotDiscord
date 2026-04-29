@@ -6,7 +6,7 @@ import psycopg2
 import feedparser
 from dotenv import load_dotenv
 from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
-from discord.ext import commands
+from discord.ext import commands, tasks
 keep_alive()  # Lance le serveur web
 load_dotenv()
 check_youtube.start()
