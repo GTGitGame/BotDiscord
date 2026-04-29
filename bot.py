@@ -3,11 +3,13 @@ import os
 import asyncio
 import datetime
 import psycopg2
+import feedparser
 from dotenv import load_dotenv
 from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
 from discord.ext import commands
 keep_alive()  # Lance le serveur web
 load_dotenv()
+check_youtube.start()
 
 # --- CONFIGURATION ET INITIALISATION BDD ---
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -42,6 +44,111 @@ async def on_ready():
         print(f"Commandes slash synchronisées : {len(synced)}")
     except Exception as e:
         print(e)
+
+# Configuration
+YOUTUBE_CHANNEL_ID = "UC17HUcSwYnE7b5XxEWLqhRw" # Votre ID de chaîne
+DISCORD_CHANNEL_ID = 1497974787719561337 # L'ID du salon "vidéos"
+LAST_VIDEO_ID = None
+ROLE_ID = 1499122462133059659 
+
+@tasks.loop(minutes=10)
+async def check_youtube():
+    global LAST_VIDEO_ID
+    url = f"https://youtube.com{YOUTUBE_CHANNEL_ID}"
+    feed = feedparser.parse(url)
+    
+    if not feed.entries:
+        return
+
+    latest_video = feed.entries[0]
+    video_id = latest_video.yt_videoid
+    video_url = latest_video.link
+
+    # Si c'est une nouvelle vidéo
+    if LAST_VIDEO_ID != video_id:
+        if LAST_VIDEO_ID is not None: # Évite d'envoyer la dernière vidéo au démarrage
+            channel = bot.get_channel(DISCORD_CHANNEL_ID)
+            await channel.send(f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 Une nouvelle vidéo de [GTGaming](https://www.youtube.com/@gtgame24) est disponible allez donc la voir ! **{latest_video.title}**\n{video_url} Bon visionnage !")
+        
+        LAST_VIDEO_ID = video_id
+
+# Dictionnaire : "ÉMOJI": ID_DU_RÔLE
+REACTION_ROLES = {
+    "🔴": 1499122462133059659,  # Notifications YouTube
+    "🎮": 1499123914713071736,  # Annonces Gaming 
+    "📢": 1499124046787510344,  # Annonces Générales 
+    "💻": 1499115980813504512
+}
+
+@bot.event
+async def on_raw_reaction_add(payload):
+    # On vérifie si c'est le bon message
+    if payload.message_id != CHOICE_MESSAGE_ID:
+        return
+
+    # On cherche si l'émoji cliqué est dans notre dictionnaire
+    emoji_name = str(payload.emoji)
+    if emoji_name in REACTION_ROLES:
+        guild = bot.get_guild(payload.guild_id)
+        role_id = REACTION_ROLES[emoji_name]
+        role = guild.get_role(role_id)
+        
+        if role:
+            await payload.member.add_roles(role)
+            print(f"Rôle {role.name} ajouté à {payload.member}")
+
+@bot.event
+async def on_raw_reaction_remove(payload):
+    # Même logique pour retirer le rôle
+    if payload.message_id != CHOICE_MESSAGE_ID:
+        return
+
+    emoji_name = str(payload.emoji)
+    if emoji_name in REACTION_ROLES:
+        guild = bot.get_guild(payload.guild_id)
+        role_id = REACTION_ROLES[emoji_name]
+        role = guild.get_role(role_id)
+        member = await guild.fetch_member(payload.user_id)
+        
+        if role and member:
+            await member.remove_roles(role)
+            print(f"Rôle {role.name} retiré à {member}")
+
+@bot.command()
+async def setup_roles(ctx):
+    embed = discord.Embed(description="Réagis ici pour tes rôles...")
+    message = await ctx.send(embed=embed)
+    
+    # On met à jour l'ID global automatiquement pour ne pas avoir à le copier-coller
+    global CHOICE_MESSAGE_ID
+    CHOICE_MESSAGE_ID = message.id 
+    
+    for emoji in REACTION_ROLES.keys():
+        await message.add_reaction(emoji)
+
+# L'ID du message où les gens doivent cliquer
+CHOICE_MESSAGE_ID = 1499125527313776692
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setup_roles(ctx):
+    embed = discord.Embed(
+        title="Choisis tes notifications",
+        description="Réagis avec les émojis correspondants pour obtenir tes rôles :\n\n"
+                    "🔴 : Notifications YouTube\n"
+                    "🎮 : Actu Gaming\n"
+                    "📢 : Annonces importantes\n"
+                    "💻 : Hack Switch + Mods, etc",
+        color=discord.Color.blue()
+    )
+    
+    message = await ctx.send(embed=embed)
+    
+    # Le bot ajoute automatiquement les émojis pour que les gens n'aient qu'à cliquer
+    for emoji in REACTION_ROLES.keys():
+        await message.add_reaction(emoji)
+    
+    print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -122,14 +229,12 @@ async def youtube(interaction: discord.Interaction):
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
         title="IsaDraw",
-        description="Découvrez les réseaux sociaux de Osa",
-        color=discord.Color.blue()
+        description="Découvrez les réseaux sociaux de IsaDraw n'hésitez pas à le suivre 😉!",
     )
     #embed.(...) field (paragraphe), footer (bas de message), image (inclure une image),
-    embed.add_field(name="Youtube", value=" (Isa Draw)[https://www.youtube.com/@Isa_Draw12]")
+    embed.add_field(name="Youtube", value=" [Isa Draw](https://www.youtube.com/@Isa_Draw12)")
+    embed.add_field(name="Instagram", value=" [isadraw12](https://www.instagram.com/isadraw12)")
     embed.set_image(url="https://yt3.googleusercontent.com/9pdUfE3u2IG761i4xxNTWoncrOd2CtFQ6OIGxpDSGLID7sz-dKUVZdhYr_ftyGDvTo8Ke_yMhzA=s160-c-k-c0x00ffffff-no-rj")
-    embed.add_field(name="Instagram", value=" (isadraw12)[https://www.instagram.com/isadraw12]")
-    embed.set_image(url="https://scontent-bru2-1.cdninstagram.com/v/t51.2885-19/456139773_389929840466717_6442151137807963536_n.jpg?stp=dst-jpg_s320x320_tt6&efg=eyJ2ZW5jb2RlX3RhZyI6InByb2ZpbGVfcGljLmRqYW5nby4xMDgwLmMyIn0&_nc_ht=scontent-bru2-1.cdninstagram.com&_nc_cat=105&_nc_oc=Q6cZ2gFneQ8vm-QoLmYMSug7RtJnpPBbk4DCIScbNFoKQDREBqSYw7EbPdRgfFgYUW9mzDF-3SKNoPiAr19mdYwsJoP6&_nc_ohc=jiHojhwd-xAQ7kNvwHJg4h6&_nc_gid=6bQHGvRvYurNn8YeGRkogA&edm=AOQ1c0wBAAAA&ccb=7-5&oh=00_Af1HysPV-7szyNxSxqB2wsn_xHQYD4vplmcmcUtre1jwjA&oe=69F804BB&_nc_sid=8b3546")
     embed.set_footer(text="Chaîne de Dessin ✏️ !")
 
     await interaction.response.send_message(embed=embed)
