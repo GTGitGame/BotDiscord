@@ -130,7 +130,7 @@ async def on_ready():
     
     try:
         # Remplace ID_DE_TON_SERVEUR par l'ID réel de ton serveur Discord (ex: 1497967551496458322)
-        guild = discord.Object(id=ID_DE_TON_SERVEUR)
+        guild = discord.Object(id=1497967134733766676)
         bot.tree.copy_global_to(guild=guild)
         synced = await bot.tree.sync(guild=guild)
         print(f"✅ {len(synced)} commandes synchronisées immédiatement sur le serveur !")
