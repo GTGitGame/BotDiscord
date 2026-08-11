@@ -167,7 +167,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         guild = member.guild
         category = after.channel.category
 
-        # Permission : Visible par tous (@everyone), mais connexion réservée uniquement au créateur
+        # Permissions : Salon visible par tous (@everyone), mais seul le créateur peut se connecter / inviter
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False),
             member: discord.PermissionOverwrite(view_channel=True, connect=True, move_members=True, manage_channels=True)
@@ -182,20 +182,10 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         temp_voice_channels.add(new_channel.id)
 
-        # Déplacement automatique du membre
+        # Déplacement automatique du créateur dans son salon
         await member.move_to(new_channel)
 
-        # Petit message explicatif au membre (Optionnel)
-        try:
-            await member.send(
-                f"🎉 Ton salon vocal privé **{new_channel.name}** a été créé !\n"
-                f"• Utilise `/vocal_invite @membre` pour autoriser un ami.\n"
-                f"• Utilise `/vocal_kick @membre` pour lui retirer l'accès."
-            )
-        except discord.Forbidden:
-            pass
-
-    # 2. Suppression automatique lorsque le salon privé devient vide
+    # 2. Suppression automatique lorsque le salon temporaire devient vide
     if before.channel and (before.channel.id in temp_voice_channels or before.channel.name.startswith("🔒 Salon de")):
         if len(before.channel.members) == 0:
             temp_voice_channels.discard(before.channel.id)
@@ -460,39 +450,6 @@ async def tempban(interaction: discord.Interaction, member: discord.Member, minu
     except Exception as e:
         print(f"Erreur lors du tempban : {e}")
 
-# --- COMMANDES SLASH POUR LA GESTION DU VOCAL PRIVÉ ---
-@bot.tree.command(name="vocal_invite", description="Autoriser un membre à rejoindre ton salon vocal privé")
-async def vocal_invite(interaction: discord.Interaction, member: discord.Member):
-    voice_state = interaction.user.voice
-    if not voice_state or not voice_state.channel or not voice_state.channel.name.startswith("🔒 Salon de"):
-        return await interaction.response.send_message("❌ Tu dois être connecté dans ton salon vocal privé pour utiliser cette commande.", ephemeral=True)
-
-    channel = voice_state.channel
-    if f"🔒 Salon de {interaction.user.display_name}".lower() not in channel.name.lower():
-        return await interaction.response.send_message("❌ Tu ne peux gérer que ton propre salon vocal privé.", ephemeral=True)
-
-    await channel.set_permissions(member, connect=True, view_channel=True)
-    await interaction.response.send_message(f"✅ {member.mention} peut désormais rejoindre **{channel.name}** !", ephemeral=True)
-
-
-@bot.tree.command(name="vocal_kick", description="Retirer l'accès et expulser un membre de ton vocal privé")
-async def vocal_kick(interaction: discord.Interaction, member: discord.Member):
-    voice_state = interaction.user.voice
-    if not voice_state or not voice_state.channel or not voice_state.channel.name.startswith("🔒 Salon de"):
-        return await interaction.response.send_message("❌ Tu dois être connecté dans ton salon vocal privé pour utiliser cette commande.", ephemeral=True)
-
-    channel = voice_state.channel
-    if f"🔒 Salon de {interaction.user.display_name}".lower() not in channel.name.lower():
-        return await interaction.response.send_message("❌ Tu ne peux gérer que ton propre salon vocal privé.", ephemeral=True)
-
-    # Retirer la permission de rejoindre
-    await channel.set_permissions(member, connect=False)
-
-    # Expulser si le membre est déjà connecté à ce vocal
-    if member.voice and member.voice.channel == channel:
-        await member.move_to(None)
-
-    await interaction.response.send_message(f"🚫 {member.mention} a été expulsé et ne peut plus rejoindre **{channel.name}**.", ephemeral=True)
 
 @bot.tree.command(name="ban_history", description="Voir l'historique des bannissements")
 @discord.app_commands.default_permissions(administrator=True)
