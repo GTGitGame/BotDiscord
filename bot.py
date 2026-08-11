@@ -33,7 +33,7 @@ TRIGGER_VOICE_NAME = "-- Créé ton Vocal privé Ici --"
 temp_voice_channels = set()
 
 # Mots obscènes/interdits par défaut (complétés par la BDD)
-OBSCENE_WORDS = ["obscène", "insulte", "porno", "hentai", "fuck", "salope", "connard"]
+OBSCENE_WORDS = ["connasse", "putain", "porno", "hentai", "fuck", "salope", "connard", "foutre", "bitte", "teub", "con", "conne"]
 
 # Texte officiel du Règlement
 REGLEMENT_TEXT = """📜 **RÈGLEMENT DU SERVEUR**
@@ -58,14 +58,29 @@ def init_db():
     if not DATABASE_URL:
         print("⚠️ DATABASE_URL non définie.")
         return
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS bans (id SERIAL PRIMARY KEY, user_name TEXT, reason TEXT, proof TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # Création de la table warnings avec enregistrement de la date de mise à jour (updated_at)
+        cur.execute('''CREATE TABLE IF NOT EXISTS warnings (
+            user_id TEXT PRIMARY KEY, 
+            count INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS bans (
+            id SERIAL PRIMARY KEY, 
+            user_name TEXT, 
+            reason TEXT, 
+            proof TEXT, 
+            date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )''')
+        cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Base de données initialisée avec succès.")
+    except Exception as e:
+        print(f"⚠️ Erreur BDD : {e}")
 
 init_db()
 
@@ -110,6 +125,7 @@ class BanRequestView(View):
 async def on_ready():
     print("Bot allumé !")
     check_youtube.start()
+    clean_expired_warns.start()
     await update_reglement()
     try:
         synced = await bot.tree.sync()
@@ -159,6 +175,29 @@ async def check_youtube():
                 )
         LAST_VIDEO_ID = video_id
 
+# --- EXPIRATION AUTOMATIQUE DES WARNS (Chaque jour) ---
+@tasks.loop(hours=24)
+async def clean_expired_warns():
+    if not DATABASE_URL:
+        return
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        # Réduit le nombre de warns de 1 pour les utilisateurs dont le dernier warn date de plus de 30 jours
+        cur.execute("""
+            UPDATE warnings 
+            SET count = count - 1, updated_at = CURRENT_TIMESTAMP 
+            WHERE updated_at < CURRENT_TIMESTAMP - INTERVAL '30 days' AND count > 0
+        """)
+        # Supprime les entrées qui sont tombées à 0 warn
+        cur.execute("DELETE FROM warnings WHERE count <= 0")
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("🧹 Vérification des avertissements expirés effectuée.")
+    except Exception as e:
+        print(f"⚠️ Erreur lors du nettoyage des warns : {e}")
+
 # --- GESTION DES VOCAUX PRIVÉS TEMPORAIRES ---
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -175,7 +214,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
         # Création du salon vocal
         new_channel = await guild.create_voice_channel(
-            name=f"🔒 Salon de {member.display_name}",
+            name=f"🔒 Salon privé de {member.display_name}",
             category=category,
             overwrites=overwrites
         )
@@ -247,61 +286,7 @@ async def setup_roles(ctx):
     
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
-# --- AUTO-MODÉRATION SUR LES MESSAGES ---
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot or not message.guild:
-        return
 
-    content = message.content.lower()
-
-    # Récupération des mots bannis
-    mots_interdits = OBSCENE_WORDS.copy()
-    if DATABASE_URL:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("SELECT word FROM banned_words")
-            mots_interdits.extend([row[0] for row in cur.fetchall()])
-            cur.close()
-            conn.close()
-        except Exception as e:
-            print(f"Erreur BDD : {e}")
-
-    # Vérification d'infraction
-    if any(word in content for word in mots_interdits):
-        await message.delete()
-        user_id = str(message.author.id)
-        
-        count = 1
-        if DATABASE_URL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
-                           ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
-                           RETURNING count''', (user_id,))
-            count = cur.fetchone()[0]
-            conn.commit()
-            cur.close()
-            conn.close()
-
-        if count >= 3:
-            mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
-            if mod_channel:
-                embed = discord.Embed(
-                    title="🚨 Demande de Bannissement requis",
-                    description=f"L'utilisateur {message.author.mention} a atteint **3 avertissements**.",
-                    color=discord.Color.red()
-                )
-                embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
-                view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
-                await mod_channel.send(embed=embed, view=view)
-
-            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé 3 avertissements. Une demande de bannissement a été transmise à la modération.")
-        else:
-            await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
-
-    await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
 @bot.tree.command(name="test", description="Test des embeds")
@@ -475,6 +460,53 @@ async def history(interaction: discord.Interaction):
             inline=False
         )
     await interaction.response.send_message(embed=embed)
+
+# --- COMMANDE POUR RETIRER DES AVERTISSEMENTS ---
+@bot.tree.command(name="unwarn", description="Retirer de 1 à 3 avertissements à un membre")
+@discord.app_commands.default_permissions(ban_members=True)
+@discord.app_commands.choices(nombre=[
+    discord.app_commands.Choice(name="1 avertissement", value=1),
+    discord.app_commands.Choice(name="2 avertissements", value=2),
+    discord.app_commands.Choice(name="3 avertissements (Réinitialiser)", value=3)
+])
+async def unwarn(interaction: discord.Interaction, member: discord.Member, nombre: int):
+    if not DATABASE_URL:
+        return await interaction.response.send_message("❌ La base de données n'est pas configurée.", ephemeral=True)
+
+    user_id = str(member.id)
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Récupération des warns actuels
+        cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+
+        if not row or row[0] == 0:
+            cur.close()
+            conn.close()
+            return await interaction.response.send_message(f"ℹ️ {member.mention} n'a aucun avertissement actif.", ephemeral=True)
+
+        current_warns = row[0]
+        new_warns = max(0, current_warns - nombre)
+
+        if new_warns == 0:
+            cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
+        else:
+            cur.execute("UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s", (new_warns, user_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        await interaction.response.send_message(
+            f"✅ **{nombre}** avertissement(s) retiré(s) à {member.mention}.\n"
+            f"📊 Nouveau total : **{new_warns}/3** avertissement(s)."
+        )
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
 
 # --- GESTION DES ERREURS DE COMMANDES ---
 @bot.tree.error
