@@ -27,7 +27,7 @@ VERIF_ROLE_ID = 1497970323096735785           # Rôle Membre Certifié
 LAST_VIDEO_ID = None
 
 # Nom exact du salon vocal déclencheur sur Discord
-TRIGGER_VOICE_NAME = "Créer votre vocal privé"
+TRIGGER_VOICE_NAME = "-- Créé ton Vocal privé Ici --"
 
 # Liste pour suivre les salons vocaux temporaires créés
 temp_voice_channels = set()
@@ -459,6 +459,40 @@ async def tempban(interaction: discord.Interaction, member: discord.Member, minu
         print(f"{member.name} a été débanni après {minutes} minutes.")
     except Exception as e:
         print(f"Erreur lors du tempban : {e}")
+
+# --- COMMANDES SLASH POUR LA GESTION DU VOCAL PRIVÉ ---
+@bot.tree.command(name="vocal_invite", description="Autoriser un membre à rejoindre ton salon vocal privé")
+async def vocal_invite(interaction: discord.Interaction, member: discord.Member):
+    voice_state = interaction.user.voice
+    if not voice_state or not voice_state.channel or not voice_state.channel.name.startswith("🔒 Salon de"):
+        return await interaction.response.send_message("❌ Tu dois être connecté dans ton salon vocal privé pour utiliser cette commande.", ephemeral=True)
+
+    channel = voice_state.channel
+    if f"🔒 Salon de {interaction.user.display_name}".lower() not in channel.name.lower():
+        return await interaction.response.send_message("❌ Tu ne peux gérer que ton propre salon vocal privé.", ephemeral=True)
+
+    await channel.set_permissions(member, connect=True, view_channel=True)
+    await interaction.response.send_message(f"✅ {member.mention} peut désormais rejoindre **{channel.name}** !", ephemeral=True)
+
+
+@bot.tree.command(name="vocal_kick", description="Retirer l'accès et expulser un membre de ton vocal privé")
+async def vocal_kick(interaction: discord.Interaction, member: discord.Member):
+    voice_state = interaction.user.voice
+    if not voice_state or not voice_state.channel or not voice_state.channel.name.startswith("🔒 Salon de"):
+        return await interaction.response.send_message("❌ Tu dois être connecté dans ton salon vocal privé pour utiliser cette commande.", ephemeral=True)
+
+    channel = voice_state.channel
+    if f"🔒 Salon de {interaction.user.display_name}".lower() not in channel.name.lower():
+        return await interaction.response.send_message("❌ Tu ne peux gérer que ton propre salon vocal privé.", ephemeral=True)
+
+    # Retirer la permission de rejoindre
+    await channel.set_permissions(member, connect=False)
+
+    # Expulser si le membre est déjà connecté à ce vocal
+    if member.voice and member.voice.channel == channel:
+        await member.move_to(None)
+
+    await interaction.response.send_message(f"🚫 {member.mention} a été expulsé et ne peut plus rejoindre **{channel.name}**.", ephemeral=True)
 
 @bot.tree.command(name="ban_history", description="Voir l'historique des bannissements")
 @discord.app_commands.default_permissions(administrator=True)
