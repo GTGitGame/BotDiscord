@@ -286,7 +286,68 @@ async def setup_roles(ctx):
     
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
 
+    content = message.content.lower()
+
+    # Récupération de la liste des mots interdits
+    mots_interdits = OBSCENE_WORDS.copy()
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT word FROM banned_words")
+            mots_interdits.extend([row[0] for row in cur.fetchall()])
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"Erreur BDD : {e}")
+
+    # Détection de mot interdit
+    if any(word in content for word in mots_interdits):
+        await message.delete()
+        user_id = str(message.author.id)
+        
+        count = 1
+        if DATABASE_URL:
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                cur = conn.cursor()
+                # Met à jour le compteur ET la date de dernier avertissement (updated_at)
+                cur.execute('''INSERT INTO warnings (user_id, count, updated_at) 
+                               VALUES (%s, 1, CURRENT_TIMESTAMP)
+                               ON CONFLICT (user_id) DO UPDATE 
+                               SET count = warnings.count + 1, updated_at = CURRENT_TIMESTAMP
+                               RETURNING count''', (user_id,))
+                count = cur.fetchone()[0]
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"Erreur BDD lors du warn : {e}")
+
+        # Traitement selon le nombre d'avertissements
+        if count >= 3:
+            mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+            if mod_channel:
+                embed = discord.Embed(
+                    title="🚨 Demande de Bannissement requise",
+                    description=f"L'utilisateur {message.author.mention} a atteint **3 avertissements**.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
+                view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
+                await mod_channel.send(embed=embed, view=view)
+
+            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé 3 avertissements. Une demande de bannissement a été transmise à la modération.")
+        else:
+            await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
+
+    await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
 @bot.tree.command(name="test", description="Test des embeds")
@@ -504,6 +565,38 @@ async def unwarn(interaction: discord.Interaction, member: discord.Member, nombr
             f"✅ **{nombre}** avertissement(s) retiré(s) à {member.mention}.\n"
             f"📊 Nouveau total : **{new_warns}/3** avertissement(s)."
         )
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
+
+@bot.tree.command(name="del_insulte", description="Retirer un mot de la liste noire")
+@discord.app_commands.default_permissions(administrator=True)
+async def del_insulte(interaction: discord.Interaction, mot: str):
+    if not DATABASE_URL:
+        return await interaction.response.send_message("❌ Base de données non configurée.", ephemeral=True)
+    
+    mot_lower = mot.lower().strip()
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Vérification si le mot existe dans la BDD
+        cur.execute("SELECT word FROM banned_words WHERE word = %s", (mot_lower,))
+        row = cur.fetchone()
+
+        if not row:
+            cur.close()
+            conn.close()
+            return await interaction.response.send_message(f"ℹ️ Le mot `{mot_lower}` n'était pas présent dans la liste noire de la BDD.", ephemeral=True)
+
+        # Suppression du mot
+        cur.execute("DELETE FROM banned_words WHERE word = %s", (mot_lower,))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        await interaction.response.send_message(f"✅ Le mot `{mot_lower}` a été retiré de la liste noire avec succès !", ephemeral=True)
 
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
