@@ -61,7 +61,6 @@ def init_db():
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # Création de la table warnings avec enregistrement de la date de mise à jour (updated_at)
         cur.execute('''CREATE TABLE IF NOT EXISTS warnings (
             user_id TEXT PRIMARY KEY, 
             count INTEGER DEFAULT 0,
@@ -75,6 +74,7 @@ def init_db():
             date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
+        cur.execute("TRUNCATE TABLE banned_words;")
         conn.commit()
         cur.close()
         conn.close()
@@ -324,38 +324,47 @@ async def on_message(message: discord.Message):
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
                 
-                # Requête SQL corrigée pour incrémenter le compteur de +1
-                cur.execute('''
-                    INSERT INTO warnings (user_id, count, updated_at) 
-                    VALUES (%s, 1, CURRENT_TIMESTAMP)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
-                        count = warnings.count + 1, 
-                        updated_at = CURRENT_TIMESTAMP
-                    RETURNING count;
-                ''', (user_id,))
+                # 1. On récupère le nombre actuel de warns
+                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+                current_count = row[0] if row else 0
+
+                # 2. Si l'utilisateur est déjà à 3, on ne rajoute pas de warn supplémentaire
+                if current_count >= 3:
+                    count = current_count
+                else:
+                    # Sinon, on incrémente de +1
+                    cur.execute('''
+                        INSERT INTO warnings (user_id, count, updated_at) 
+                        VALUES (%s, 1, CURRENT_TIMESTAMP)
+                        ON CONFLICT (user_id) 
+                        DO UPDATE SET 
+                            count = warnings.count + 1, 
+                            updated_at = CURRENT_TIMESTAMP
+                        RETURNING count;
+                    ''', (user_id,))
+                    count = cur.fetchone()[0]
                 
-                count = cur.fetchone()[0]
                 conn.commit()
                 cur.close()
                 conn.close()
             except Exception as e:
                 print(f"Erreur BDD lors du warn : {e}")
 
-        # Si l'utilisateur atteint 3 avertissements ou plus
+        # Traitement des avertissements
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
                 embed = discord.Embed(
                     title="🚨 Demande de Bannissement requise",
-                    description=f"L'utilisateur {message.author.mention} a atteint **{count} avertissements**.",
+                    description=f"L'utilisateur {message.author.mention} a atteint **3/3 avertissements**.",
                     color=discord.Color.red()
                 )
                 embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
                 view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
                 await mod_channel.send(embed=embed, view=view)
 
-            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé {count} avertissements. Une demande de bannissement a été transmise à la modération.")
+            await message.channel.send(f"🚨 {message.author.mention}, vous avez atteint la limite de 3 avertissements. Une demande de bannissement a été transmise à la modération.")
         else:
             await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
 
