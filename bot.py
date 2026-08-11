@@ -313,8 +313,8 @@ async def on_message(message: discord.Message):
         except Exception as e:
             print(f"Erreur BDD : {e}")
 
-    # Détection de mot interdit
-    if any(word in content for word in mots_interdits):
+    mots_du_message = content.split()
+    if any(word in mots_du_message for word in mots_interdits):
         await message.delete()
         user_id = str(message.author.id)
         
