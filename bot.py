@@ -18,13 +18,19 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 YOUTUBE_CHANNEL_ID = "UC17HUcSwYnE7b5XxEWLqhRw"
 DISCORD_CHANNEL_ID = 1497974787719561337      # Salon "vidéos"
 REGLEMENT_CHANNEL_ID = 1536738321240293479    # Remplace par l'ID réel du salon règlement
-MOD_LOG_CHANNEL_ID = 1497967551496458322      # Remplace par l'ID réel du salon de modération/fondateur
+MOD_LOG_CHANNEL_ID = 1536769906295443467      # Remplace par l'ID réel du salon de modération/fondateur
 
 ROLE_ID = 1499122462133059659                 # Rôle Notif YouTube
 CHOICE_MESSAGE_ID = 1499125527313776692       # ID du message pour les Reaction Roles
 VERIF_ROLE_ID = 1497970323096735785           # Rôle Membre Certifié
 
 LAST_VIDEO_ID = None
+
+# Nom exact du salon vocal déclencheur sur Discord
+TRIGGER_VOICE_NAME = "Créer votre vocal privé"
+
+# Liste pour suivre les salons vocaux temporaires créés
+temp_voice_channels = set()
 
 # Mots obscènes/interdits par défaut (complétés par la BDD)
 OBSCENE_WORDS = ["obscène", "insulte", "porno", "hentai", "fuck", "salope", "connard"]
@@ -152,6 +158,51 @@ async def check_youtube():
                     f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 {content_type} de GTGaming est disponible ! **{latest_video.title}**\n{video_url}"
                 )
         LAST_VIDEO_ID = video_id
+
+# --- GESTION DES VOCAUX PRIVÉS TEMPORAIRES ---
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    # 1. Création du vocal privé quand un membre rejoint le salon déclencheur
+    if after.channel and after.channel.name.lower() == TRIGGER_VOICE_NAME.lower():
+        guild = member.guild
+        category = after.channel.category
+
+        # Permission : Visible par tous (@everyone), mais connexion réservée uniquement au créateur
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=True, connect=False),
+            member: discord.PermissionOverwrite(view_channel=True, connect=True, move_members=True, manage_channels=True)
+        }
+
+        # Création du salon vocal
+        new_channel = await guild.create_voice_channel(
+            name=f"🔒 Salon de {member.display_name}",
+            category=category,
+            overwrites=overwrites
+        )
+
+        temp_voice_channels.add(new_channel.id)
+
+        # Déplacement automatique du membre
+        await member.move_to(new_channel)
+
+        # Petit message explicatif au membre (Optionnel)
+        try:
+            await member.send(
+                f"🎉 Ton salon vocal privé **{new_channel.name}** a été créé !\n"
+                f"• Utilise `/vocal_invite @membre` pour autoriser un ami.\n"
+                f"• Utilise `/vocal_kick @membre` pour lui retirer l'accès."
+            )
+        except discord.Forbidden:
+            pass
+
+    # 2. Suppression automatique lorsque le salon privé devient vide
+    if before.channel and (before.channel.id in temp_voice_channels or before.channel.name.startswith("🔒 Salon de")):
+        if len(before.channel.members) == 0:
+            temp_voice_channels.discard(before.channel.id)
+            try:
+                await before.channel.delete(reason="Vocal privé temporaire vide.")
+            except discord.NotFound:
+                pass
 
 # --- GESTION DES REACTION ROLES (RAW EVENTS) ---
 @bot.event
