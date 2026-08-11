@@ -17,7 +17,7 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 
 YOUTUBE_CHANNEL_ID = "UC17HUcSwYnE7b5XxEWLqhRw"
 DISCORD_CHANNEL_ID = 1497974787719561337      # Salon "vidéos"
-REGLEMENT_CHANNEL_ID = 1497967551496458322    # Remplace par l'ID réel du salon règlement
+REGLEMENT_CHANNEL_ID = 1536738321240293479    # Remplace par l'ID réel du salon règlement
 MOD_LOG_CHANNEL_ID = 1497967551496458322      # Remplace par l'ID réel du salon de modération/fondateur
 
 ROLE_ID = 1499122462133059659                 # Rôle Notif YouTube
