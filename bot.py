@@ -601,6 +601,29 @@ async def del_insulte(interaction: discord.Interaction, mot: str):
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
 
+@bot.tree.command(name="list_insultes", description="Afficher les mots interdits enregistrés en BDD")
+@discord.app_commands.default_permissions(administrator=True)
+async def list_insultes(interaction: discord.Interaction):
+    if not DATABASE_URL:
+        return await interaction.response.send_message("❌ Base de données non configurée.", ephemeral=True)
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        cur.execute("SELECT word FROM banned_words")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if not rows:
+            return await interaction.response.send_message("ℹ️ Aucun mot personnalisé dans la base de données.", ephemeral=True)
+
+        mots_list = ", ".join([f"`{row[0]}`" for row in rows])
+        await interaction.response.send_message(f"📜 **Mots interdits en BDD :**\n{mots_list}", ephemeral=True)
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
+
 # --- GESTION DES ERREURS DE COMMANDES ---
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: discord.app_commands.AppCommandError):
