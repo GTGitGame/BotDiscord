@@ -127,9 +127,13 @@ async def on_ready():
     check_youtube.start()
     clean_expired_warns.start()
     await update_reglement()
+    
     try:
-        synced = await bot.tree.sync()
-        print(f"Commandes slash synchronisées : {len(synced)}")
+        # Remplace ID_DE_TON_SERVEUR par l'ID réel de ton serveur Discord (ex: 1497967551496458322)
+        guild = discord.Object(id=ID_DE_TON_SERVEUR)
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
+        print(f"✅ {len(synced)} commandes synchronisées immédiatement sur le serveur !")
     except Exception as e:
         print(f"Erreur de synchronisation : {e}")
 
