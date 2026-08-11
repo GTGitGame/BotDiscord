@@ -5,101 +5,172 @@ import datetime
 import psycopg2
 import feedparser
 from dotenv import load_dotenv
-from keep_alive import keep_alive  # Import du fichier qu'on vient de créer
+from keep_alive import keep_alive
 from discord.ext import commands, tasks
-keep_alive()  # Lance le serveur web
+from discord.ui import Button, View
+
+keep_alive()
 load_dotenv()
 
-# --- CONFIGURATION ET INITIALISATION BDD ---
+# --- CONFIGURATION GENERALES & IDENTIFIANTS ---
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+YOUTUBE_CHANNEL_ID = "UC17HUcSwYnE7b5XxEWLqhRw"
+DISCORD_CHANNEL_ID = 1497974787719561337      # Salon "vidéos"
+REGLEMENT_CHANNEL_ID = 1497967551496458322    # Remplace par l'ID réel du salon règlement
+MOD_LOG_CHANNEL_ID = 1497967551496458322      # Remplace par l'ID réel du salon de modération/fondateur
+
+ROLE_ID = 1499122462133059659                 # Rôle Notif YouTube
+CHOICE_MESSAGE_ID = 1499125527313776692       # ID du message pour les Reaction Roles
+VERIF_ROLE_ID = 1497970323096735785           # Rôle Membre Certifié
+
+LAST_VIDEO_ID = None
+
+# Mots obscènes/interdits par défaut (complétés par la BDD)
+OBSCENE_WORDS = ["obscène", "insulte", "porno", "hentai", "fuck", "salope", "connard"]
+
+# Texte officiel du Règlement
+REGLEMENT_TEXT = """📜 **RÈGLEMENT DU SERVEUR**
+
+1️⃣ **Respect & Politesse** : Pas d'insultes, de propos haineux, racistes ou obscènes.
+2️⃣ **Pas de Spam / Pub** : Le spam et les liens non autorisés sont strictement interdits.
+3️⃣ **Contenu approprié** : Gardez les échanges adaptés à tous les publics (pas de NSFW/contenu explicite).
+4️⃣ **Écoute de l'équipe** : Respectez les décisions des modérateurs et des administrateurs.
+
+⚠️ *En cas d'accumulation de 3 avertissements, une demande de bannissement sera soumise à l'équipe de modération.*"""
+
+# Dictionnaire Réaction -> Rôle
+REACTION_ROLES = {
+    "🔴": 1499122462133059659,  # Notifications YouTube
+    "🎮": 1499123914713071736,  # Annonces Gaming 
+    "📢": 1499124046787510344,  # Annonces Générales 
+    "💻": 1499115980813504512   # Hack Switch + Mods
+}
+
+# --- INITIALISATION BDD ---
 def init_db():
+    if not DATABASE_URL:
+        print("⚠️ DATABASE_URL non définie.")
+        return
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    # Table des avertissements
     cur.execute('''CREATE TABLE IF NOT EXISTS warnings (user_id TEXT PRIMARY KEY, count INTEGER DEFAULT 0)''')
-    # Table de l'historique des bans
     cur.execute('''CREATE TABLE IF NOT EXISTS bans (id SERIAL PRIMARY KEY, user_name TEXT, reason TEXT, proof TEXT, date TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    # Table des mots interdits (ta liste noire)
     cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
     conn.commit()
     cur.close()
     conn.close()
 
-# On appelle la fonction IMMÉDIATEMENT pour que les tables soient prêtes
 init_db()
 
+# --- INITIALISATION DU BOT ---
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-print("Lancement du  bot...")
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
+# --- VUE DE MODÉRATION (DEMANDE DE BAN POUR 3 WARNS) ---
+class BanRequestView(View):
+    def __init__(self, target_member: discord.Member, reason: str):
+        super().__init__(timeout=None)
+        self.target_member = target_member
+        self.reason = reason
 
+    @discord.ui.button(label="🔨 Bannir le membre", style=discord.ButtonStyle.danger)
+    async def confirm_ban(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.ban_members:
+            return await interaction.response.send_message("Tu n'as pas la permission d'exécuter cette action.", ephemeral=True)
+        
+        await self.target_member.ban(reason=f"3 Avertissements - Validé par {interaction.user.name}")
+        await interaction.response.send_message(f"✅ {self.target_member.mention} a été banni du serveur par {interaction.user.mention}.")
+        self.stop()
+
+    @discord.ui.button(label="❌ Réinitialiser avertissements", style=discord.ButtonStyle.secondary)
+    async def reset_warns(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.ban_members:
+            return await interaction.response.send_message("Tu n'as pas la permission d'exécuter cette action.", ephemeral=True)
+
+        if DATABASE_URL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("DELETE FROM warnings WHERE user_id = %s", (str(self.target_member.id),))
+            conn.commit()
+            cur.close()
+            conn.close()
+
+        await interaction.response.send_message(f"🔄 Avertissements réinitialisés pour {self.target_member.mention}.")
+        self.stop()
+
+# --- ÉVÉNEMENT ON_READY ---
 @bot.event
 async def on_ready():
-    print("Bat allumé !")
+    print("Bot allumé !")
     check_youtube.start()
-    #synchroniser les commandes
+    await update_reglement()
     try:
-        #sync (synced nom modifiable sans problème ATTENTION: Ne pas oubliez de remplacer dans ce cas.)
         synced = await bot.tree.sync()
         print(f"Commandes slash synchronisées : {len(synced)}")
     except Exception as e:
-        print(e)
+        print(f"Erreur de synchronisation : {e}")
 
-# Configuration
-YOUTUBE_CHANNEL_ID = "UC17HUcSwYnE7b5XxEWLqhRw" # Votre ID de chaîne
-DISCORD_CHANNEL_ID = 1497974787719561337 # L'ID du salon "vidéos"
-LAST_VIDEO_ID = None
-ROLE_ID = 1499122462133059659 
+# --- GESTION AUTOMATIQUE DU RÈGLEMENT ---
+async def update_reglement():
+    channel = bot.get_channel(REGLEMENT_CHANNEL_ID)
+    if not channel:
+        return
 
+    async for message in channel.history(limit=10):
+        if message.author == bot.user:
+            if message.content == REGLEMENT_TEXT:
+                return  # Règlement déjà affiché et à jour
+            else:
+                await message.delete()  # Ancienne version supprimée
+
+    # Publication du nouveau règlement s'il est absent ou a été modifié
+    await channel.send(REGLEMENT_TEXT)
+
+# --- VERIFICATION DES NOUVELLES VIDÉOS & SHORTS YOUTUBE ---
 @tasks.loop(minutes=10)
 async def check_youtube():
     global LAST_VIDEO_ID
-    url = f"https://youtube.com{YOUTUBE_CHANNEL_ID}"
+    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={YOUTUBE_CHANNEL_ID}"
     feed = feedparser.parse(url)
     
     if not feed.entries:
         return
 
     latest_video = feed.entries[0]
-    video_id = latest_video.yt_videoid
+    video_id = latest_video.get('yt_videoid', latest_video.id)
     video_url = latest_video.link
 
-    # Si c'est une nouvelle vidéo
     if LAST_VIDEO_ID != video_id:
-        if LAST_VIDEO_ID is not None: # Évite d'envoyer la dernière vidéo au démarrage
+        if LAST_VIDEO_ID is not None:
             channel = bot.get_channel(DISCORD_CHANNEL_ID)
-            await channel.send(f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 Une nouvelle vidéo de [GTGaming](https://www.youtube.com/@gtgame24) est disponible allez donc la voir ! **{latest_video.title}**\n{video_url} Bon visionnage !")
-        
+            if channel:
+                is_short = "/shorts/" in video_url or "short" in latest_video.title.lower()
+                content_type = "📱 **Nouveau Short**" if is_short else "🎬 **Nouvelle Vidéo**"
+                
+                await channel.send(
+                    f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 {content_type} de GTGaming est disponible ! **{latest_video.title}**\n{video_url}"
+                )
         LAST_VIDEO_ID = video_id
 
-# Dictionnaire : "ÉMOJI": ID_DU_RÔLE
-REACTION_ROLES = {
-    "🔴": 1499122462133059659,  # Notifications YouTube
-    "🎮": 1499123914713071736,  # Annonces Gaming 
-    "📢": 1499124046787510344,  # Annonces Générales 
-    "💻": 1499115980813504512
-}
-
+# --- GESTION DES REACTION ROLES (RAW EVENTS) ---
 @bot.event
 async def on_raw_reaction_add(payload):
-    # On vérifie si c'est le bon message
     if payload.message_id != CHOICE_MESSAGE_ID:
         return
 
-    # On cherche si l'émoji cliqué est dans notre dictionnaire
     emoji_name = str(payload.emoji)
     if emoji_name in REACTION_ROLES:
         guild = bot.get_guild(payload.guild_id)
         role_id = REACTION_ROLES[emoji_name]
         role = guild.get_role(role_id)
         
-        if role:
+        if role and payload.member:
             await payload.member.add_roles(role)
             print(f"Rôle {role.name} ajouté à {payload.member}")
 
 @bot.event
 async def on_raw_reaction_remove(payload):
-    # Même logique pour retirer le rôle
     if payload.message_id != CHOICE_MESSAGE_ID:
         return
 
@@ -114,9 +185,7 @@ async def on_raw_reaction_remove(payload):
             await member.remove_roles(role)
             print(f"Rôle {role.name} retiré à {member}")
 
-# L'ID du message où les gens doivent cliquer
-CHOICE_MESSAGE_ID = 1499125527313776692
-
+# --- COMMANDES PREFIX (!) ---
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_roles(ctx):
@@ -132,55 +201,68 @@ async def setup_roles(ctx):
     
     message = await ctx.send(embed=embed)
     
-    # Le bot ajoute automatiquement les émojis pour que les gens n'aient qu'à cliquer
     for emoji in REACTION_ROLES.keys():
         await message.add_reaction(emoji)
     
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot: return
+    if message.author.bot or not message.guild:
+        return
 
-    # --- 1. RÉCUPÉRER LES INSULTES DEPUIS LA BDD ---
-    conn = psycopg2.connect(DATABASE_URL)
-    cur = conn.cursor()
-    
-    cur.execute("SELECT word FROM banned_words")
-    # On transforme le résultat en une liste simple de mots
-    mots_interdits = [row[0] for row in cur.fetchall()]
-    
     content = message.content.lower()
 
-    # --- 2. VÉRIFICATION ---
+    # Récupération des mots bannis
+    mots_interdits = OBSCENE_WORDS.copy()
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT word FROM banned_words")
+            mots_interdits.extend([row[0] for row in cur.fetchall()])
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"Erreur BDD : {e}")
+
+    # Vérification d'infraction
     if any(word in content for word in mots_interdits):
         await message.delete()
         user_id = str(message.author.id)
         
-        # --- 3. GESTION DES WARNS DANS LA BDD ---
-        cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
-                       ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
-                       RETURNING count''', (user_id,))
-        
-        count = cur.fetchone()[0]
-        
+        count = 1
+        if DATABASE_URL:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
+                           ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
+                           RETURNING count''', (user_id,))
+            count = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+            conn.close()
+
         if count >= 3:
-            # Enregistrement du ban et reset
-            cur.execute("INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)", 
-                        (message.author.name, "3 avertissements", message.content))
-            cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
-            conn.commit()
-            
-            await message.author.ban(reason="3 avertissements (Automod)")
-            await message.channel.send(f"🚨 {message.author.mention} banni pour accumulation d'infractions.")
+            mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+            if mod_channel:
+                embed = discord.Embed(
+                    title="🚨 Demande de Bannissement requis",
+                    description=f"L'utilisateur {message.author.mention} a atteint **3 avertissements**.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
+                view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
+                await mod_channel.send(embed=embed, view=view)
+
+            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé 3 avertissements. Une demande de bannissement a été transmise à la modération.")
         else:
-            conn.commit()
-            await message.channel.send(f"⚠️ {message.author.mention}, attention ! ({count}/3)")
-    
-    cur.close()
-    conn.close()
+            await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
+
     await bot.process_commands(message)
 
+# --- COMMANDES SLASH (TREE) ---
 @bot.tree.command(name="test", description="Test des embeds")
 async def test_embed(interaction: discord.Interaction, member: discord.Member):
     embed = discord.Embed(
@@ -188,7 +270,6 @@ async def test_embed(interaction: discord.Interaction, member: discord.Member):
         description="Description de l'embed",
         color=discord.Color.blue()
     )
-    #embed.(...) field (paragraphe), footer (bas de message), image (inclure une image),
     embed.add_field(name="Python", value="Apprendre le python en s'amusant", inline=False)
     embed.add_field(name="Web", value="Apprendre le web en s'amusant", inline=False)
     embed.set_footer(text="Bas de message")
@@ -197,31 +278,30 @@ async def test_embed(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="warnguy", description="Alerter une personne")
-@discord.app_commands.default_permissions(ban_members=True) #Permission/rôle Requis(e) (ex: Modérateur)
+@discord.app_commands.default_permissions(ban_members=True)
 async def warnguy(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.send_message("Alerte envoyé !")
-    await member.send("Tu as reçu une alerte")
+    await interaction.response.send_message("Alerte envoyée !", ephemeral=True)
+    await member.send("Tu as reçu une alerte.")
 
-@bot.tree.command(name="banguy", description="Alerter une personne")
+@bot.tree.command(name="banguy", description="Bannir une personne")
 @discord.app_commands.default_permissions(ban_members=True)
 async def banguy(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.send_message("Ban envoyé !")
-    await member.ban(reason="Tu n'es pas abonné")
-    await member.send("Tu as été Banni")
+    await interaction.response.send_message("Ban effectué !", ephemeral=True)
+    await member.send("Tu as été banni.")
+    await member.ban(reason="Banni via commande staff")
 
 @bot.tree.command(name="youtube", description="Affiche ma chaine youtube")
 async def youtube(interaction: discord.Interaction):
     await interaction.response.send_message("Voici le lien de ma chaine Youtube: https://www.youtube.com/@GTGame24")
 
 @bot.tree.command(name="isadraw", description="Affiche les Réseaux de la chaîne IsaDraw")
-async def test_embed(interaction: discord.Interaction, member: discord.Member):
+async def isadraw(interaction: discord.Interaction):
     embed = discord.Embed(
         title="IsaDraw",
         description="Découvrez les réseaux sociaux de IsaDraw n'hésitez pas à le suivre 😉!",
     )
-    #embed.(...) field (paragraphe), footer (bas de message), image (inclure une image),
-    embed.add_field(name="Youtube", value=" [Isa Draw](https://www.youtube.com/@Isa_Draw12)")
-    embed.add_field(name="Instagram", value=" [isadraw12](https://www.instagram.com/isadraw12)")
+    embed.add_field(name="Youtube", value="[Isa Draw](https://www.youtube.com/@Isa_Draw12)")
+    embed.add_field(name="Instagram", value="[isadraw12](https://www.instagram.com/isadraw12)")
     embed.set_image(url="https://yt3.googleusercontent.com/9pdUfE3u2IG761i4xxNTWoncrOd2CtFQ6OIGxpDSGLID7sz-dKUVZdhYr_ftyGDvTo8Ke_yMhzA=s160-c-k-c0x00ffffff-no-rj")
     embed.set_footer(text="Chaîne de Dessin ✏️ !")
 
@@ -229,15 +309,12 @@ async def test_embed(interaction: discord.Interaction, member: discord.Member):
 
 @bot.event
 async def on_member_join(member):
-    # Chercher un canal nommé 'bienvenue' dans la guild où le membre a rejoint
     channel = discord.utils.get(member.guild.text_channels, name='👋bienvenue👋')
     if channel:
-        # Envoyer un message de bienvenue personnalisé
-        await channel.send(f'Bienvenue sur le serveur, {member.mention} ! 🎉')
+        await channel.send(f'Bienvenue sur le serveur, {member.mention} ! 🎉 N\'hésite pas à lire le règlement.')
 
 @bot.tree.command(name="hack_switch", description="Retrouvez l'endroit où se trouve les docs + Tuto sur hack_Switch")
 async def hack_switch(interaction: discord.Interaction):
-    # Récupérer le channel par ID
     channel = bot.get_channel(1497967551496458322)
 
     if channel is None:
@@ -246,134 +323,78 @@ async def hack_switch(interaction: discord.Interaction):
 
     await interaction.response.send_message(
         f"Salut {interaction.user.mention} ! Les fichiers/dossiers ainsi que les Tutos se trouvent dans le salon {channel.mention}. "
-        "⚠️ Attention: Rappel: A suivre étape par étape sinon risque de Brick (Rendre la console Inutilisable) ⚠️ A vos risques et périls ..."
+        "⚠️ Attention: Rappel: À suivre étape par étape sinon risque de Brick (Rendre la console inutilisable) ⚠️ À vos risques et périls ...",
+        ephemeral=True
     )
 
 @bot.tree.command(name="add_insulte", description="Ajouter un mot à la liste noire")
 @discord.app_commands.default_permissions(administrator=True)
 async def add_insulte(interaction: discord.Interaction, mot: str):
+    if not DATABASE_URL:
+        return await interaction.response.send_message("BDD non configurée.", ephemeral=True)
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
     try:
         cur.execute("INSERT INTO banned_words (word) VALUES (%s) ON CONFLICT DO NOTHING", (mot.lower(),))
         conn.commit()
-        await interaction.response.send_message(f"✅ Le mot `{mot}` est maintenant interdit.")
+        await interaction.response.send_message(f"✅ Le mot `{mot}` est maintenant interdit.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"Erreur : {e}")
+        await interaction.response.send_message(f"Erreur : {e}", ephemeral=True)
     finally:
         cur.close()
         conn.close()
 
 @bot.tree.command(name="verification", description="Une commande pour obtenir le grade de membre Certifié")
 async def verif(interaction: discord.Interaction, member: discord.Member):
-    role_id = 1497970323096735785
-    role_mention = f"<@&{role_id}>"
+    role_mention = f"<@&{VERIF_ROLE_ID}>"
 
-    # Envoyer un message d'information dans le canal
     msg = await interaction.channel.send(
         f"{member.mention}, un modérateur va vérifier ta demande. Réagissez avec ✅ ou ❌."
     )
-    # Ajouter les réactions pour la modération
     await msg.add_reaction("✅")
     await msg.add_reaction("❌")
 
-    # Répondre à l'utilisateur que le message a été envoyé
     await interaction.response.send_message(
         f"Salut {interaction.user.mention} ! Pour devenir {role_mention} tu dois répondre à ce questionnaire. En cas d'acceptation, tu recevras un MP alors sois à l'affût 😉! "
-        "⚠️ Attention: une fois certifié, la modération de ton compte sera réduite mais si tu enfreins une règle, ce sera tolérance zéro (Ban jusqu'à nouvelle ordre!). ⚠️",
+        "⚠️ Attention: une fois certifié, la modération de ton compte sera réduite mais si tu enfreins une règle, ce sera tolérance zéro (Ban jusqu'à nouvel ordre!). ⚠️",
         ephemeral=True
     )
 
-
 @bot.event
 async def on_reaction_add(reaction, user):
-    # Ignorer les réactions du bot lui-même
     if user.bot:
         return
 
-    # Vérifier que l'utilisateur est modérateur (exemple avec un rôle nommé "Modérateur")
     mod_role = discord.utils.get(user.guild.roles, name="Modérateur")
     if mod_role not in user.roles:
         return
 
-    # Vérifier que la réaction est sur un message du bot (pour éviter de traiter toutes les réactions)
-    if reaction.message.author != bot.user:
-        return
-
-    # Vérifier que le message contient au moins une mention (le membre à notifier)
-    if not reaction.message.mentions:
+    if reaction.message.author != bot.user or not reaction.message.mentions:
         return
 
     member_to_notify = reaction.message.mentions[0]
-
-    # Récupérer le rôle à attribuer (exemple : rôle "Certifié")
-    role_to_add = user.guild.get_role(1497970323096735785) # Utilise l'ID que tu as déjà
+    role_to_add = user.guild.get_role(VERIF_ROLE_ID)
 
     if str(reaction.emoji) == "✅":
-        # Envoyer MP de bienvenue
         try:
-            await member_to_notify.send("Bienvenue ! Votre commande a été acceptée.")
+            await member_to_notify.send("Bienvenue ! Votre demande de certification a été acceptée.")
         except discord.Forbidden:
             print(f"Impossible d'envoyer un MP à {member_to_notify}")
 
-        # Ajouter le rôle "Certifié" au membre
         if role_to_add:
             try:
                 await member_to_notify.add_roles(role_to_add)
-            except discord.Forbidden:
-                print(f"Impossible d'ajouter le rôle à {member_to_notify}")
             except Exception as e:
                 print(f"Erreur lors de l'ajout du rôle : {e}")
 
-        elif str(reaction.emoji) == "❌":
-            try:
-                await member_to_notify.send("Désolé, votre demande a été refusée.")
-            except discord.Forbidden:
-                print(f"Erreur refus: {e}")
-
-# Dictionnaire pour stocker les avertissements {user_id: nombre_davertissements}
-
-# Liste des mots interdits (à compléter selon tes règles)
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
-    # 1. On vérifie d'abord s'il y a une infraction
-    content = message.content.lower()
-    if any(word in content for word in BANNED_WORDS):
-        await message.delete() # Optionnel : supprimer le message
-        
-        user_id = str(message.author.id) # Définition de l'ID
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-            
-        cur.execute('''INSERT INTO warnings (user_id, count) VALUES (%s, 1)
-                           ON CONFLICT (user_id) DO UPDATE SET count = warnings.count + 1 
-                           RETURNING count''', (user_id,))
-        count = cur.fetchone()[0] # Le [0] est important pour avoir le chiffre
-            
-        if count >= 3:
-            cur.execute("INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)", 
-                        (message.author.name, "3 avertissements", message.content))
-            cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
-            conn.commit()
-            await message.author.ban(reason="3 avertissements (Automod)")
-            await message.channel.send(f"🚨 {message.author.mention} banni (3/3 infractions).")
-        else:
-            conn.commit()
-            await message.channel.send(f"⚠️ {message.author.mention}, attention ! ({count}/3)")
-            
-        cur.close()
-        conn.close()
-
-    # Important pour les commandes "!"
-    await bot.process_commands(message)
-
+    elif str(reaction.emoji) == "❌":
+        try:
+            await member_to_notify.send("Désolé, votre demande de certification a été refusée.")
+        except discord.Forbidden:
+            print(f"Impossible d'envoyer un MP à {member_to_notify}")
 
 @bot.tree.command(name="tempban", description="Bannir un membre temporairement")
-@discord.app_commands.default_permissions(ban_members=True) # Réservé au Staff
+@discord.app_commands.default_permissions(ban_members=True)
 async def tempban(interaction: discord.Interaction, member: discord.Member, minutes: int, reason: str = "Non spécifiée"):
     await interaction.response.send_message(f"🔨 {member.mention} a été banni pour {minutes} minutes. Raison : {reason}")
     
@@ -381,7 +402,6 @@ async def tempban(interaction: discord.Interaction, member: discord.Member, minu
         await member.send(f"Tu as été banni de {interaction.guild.name} pendant {minutes} minutes pour : {reason}")
         await member.ban(reason=reason)
         
-        # Attendre la durée avant de débannir
         await asyncio.sleep(minutes * 60)
         
         await interaction.guild.unban(member)
@@ -392,18 +412,24 @@ async def tempban(interaction: discord.Interaction, member: discord.Member, minu
 @bot.tree.command(name="ban_history", description="Voir l'historique des bannissements")
 @discord.app_commands.default_permissions(administrator=True)
 async def history(interaction: discord.Interaction):
-    data = load_data()
-    history = data["bans_history"]
-    
-    if not history:
-        return await interaction.response.send_message("L'historique est vide.", ephemeral=True)
-    
+    if not DATABASE_URL:
+        return await interaction.response.send_message("BDD non configurée.", ephemeral=True)
+        
+    conn = psycopg2.connect(DATABASE_URL)
+    cur = conn.cursor()
+    cur.execute("SELECT user_name, reason, proof, date FROM bans ORDER BY id DESC LIMIT 5")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    if not rows:
+        return await interaction.response.send_message("L'historique des bannissements est vide.", ephemeral=True)
+
     embed = discord.Embed(title="📜 Historique des Bans", color=discord.Color.red())
-    # On affiche les 5 derniers pour ne pas surcharger
-    for entry in history[-5:]:
+    for row in rows:
         embed.add_field(
-            name=f"Utilisateur : {entry['user']}",
-            value=f"📅 Date: {entry['date']}\n📝 Raison: {entry['reason']}\n📂 Preuve: {entry['proof']}",
+            name=f"Utilisateur : {row[0]}",
+            value=f"📅 Date: {row[3]}\n📝 Raison: {row[1]}\n📂 Preuve: {row[2]}",
             inline=False
         )
     await interaction.response.send_message(embed=embed)
