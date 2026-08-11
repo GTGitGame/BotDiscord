@@ -33,7 +33,7 @@ TRIGGER_VOICE_NAME = "-- Créé ton Vocal privé Ici --"
 temp_voice_channels = set()
 
 # Mots obscènes/interdits par défaut (complétés par la BDD)
-OBSCENE_WORDS = ["connasse", "putain", "porno", "hentai", "fuck", "salope", "connard", "foutre", "bitte", "teub", "con", "conne"]
+OBSCENE_WORDS = [""]
 
 # Texte officiel du Règlement
 REGLEMENT_TEXT = """📜 **RÈGLEMENT DU SERVEUR**
@@ -323,12 +323,18 @@ async def on_message(message: discord.Message):
             try:
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
-                # Met à jour le compteur ET la date de dernier avertissement (updated_at)
-                cur.execute('''INSERT INTO warnings (user_id, count, updated_at) 
-                               VALUES (%s, 1, CURRENT_TIMESTAMP)
-                               ON CONFLICT (user_id) DO UPDATE 
-                               SET count = warnings.count + 1, updated_at = CURRENT_TIMESTAMP
-                               RETURNING count''', (user_id,))
+                
+                # Requête SQL corrigée pour incrémenter le compteur de +1
+                cur.execute('''
+                    INSERT INTO warnings (user_id, count, updated_at) 
+                    VALUES (%s, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET 
+                        count = warnings.count + 1, 
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING count;
+                ''', (user_id,))
+                
                 count = cur.fetchone()[0]
                 conn.commit()
                 cur.close()
@@ -336,20 +342,20 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"Erreur BDD lors du warn : {e}")
 
-        # Traitement selon le nombre d'avertissements
+        # Si l'utilisateur atteint 3 avertissements ou plus
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
                 embed = discord.Embed(
                     title="🚨 Demande de Bannissement requise",
-                    description=f"L'utilisateur {message.author.mention} a atteint **3 avertissements**.",
+                    description=f"L'utilisateur {message.author.mention} a atteint **{count} avertissements**.",
                     color=discord.Color.red()
                 )
                 embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
                 view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
                 await mod_channel.send(embed=embed, view=view)
 
-            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé 3 avertissements. Une demande de bannissement a été transmise à la modération.")
+            await message.channel.send(f"🚨 {message.author.mention}, vous avez accumulé {count} avertissements. Une demande de bannissement a été transmise à la modération.")
         else:
             await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
 
