@@ -314,7 +314,7 @@ async def on_message(message: discord.Message):
             print(f"Erreur BDD : {e}")
 
     mots_du_message = content.split()
-    if any(word in mots_du_message for word in mots_interdits):
+    if any(word in content for word in mots_interdits):
         await message.delete()
         user_id = str(message.author.id)
         
@@ -324,16 +324,15 @@ async def on_message(message: discord.Message):
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
                 
-                # 1. On récupère le nombre actuel de warns
+                # Récupérer la valeur actuelle
                 cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
                 row = cur.fetchone()
                 current_count = row[0] if row else 0
 
-                # 2. Si l'utilisateur est déjà à 3, on ne rajoute pas de warn supplémentaire
                 if current_count >= 3:
                     count = current_count
                 else:
-                    # Sinon, on incrémente de +1
+                    # Incrémenter proprement + 1
                     cur.execute('''
                         INSERT INTO warnings (user_id, count, updated_at) 
                         VALUES (%s, 1, CURRENT_TIMESTAMP)
@@ -351,7 +350,7 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"Erreur BDD lors du warn : {e}")
 
-        # Traitement des avertissements
+        # Affichage selon le nombre d'avertissements
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
@@ -367,7 +366,6 @@ async def on_message(message: discord.Message):
             await message.channel.send(f"🚨 {message.author.mention}, vous avez atteint la limite de 3 avertissements. Une demande de bannissement a été transmise à la modération.")
         else:
             await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
-
     await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
