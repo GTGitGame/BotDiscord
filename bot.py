@@ -293,6 +293,8 @@ async def setup_roles(ctx):
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -300,57 +302,50 @@ async def on_message(message: discord.Message):
 
     content = message.content.lower()
 
-    # Récupération de la liste des mots interdits
-    mots_interdits = OBSCENE_WORDS.copy()
+    # 1. Récupération de la liste des mots interdits
+    mots_interdits = [w for w in OBSCENE_WORDS if w]
     if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
             cur.execute("SELECT word FROM banned_words")
-            mots_interdits.extend([row[0] for row in cur.fetchall()])
+            mots_interdits.extend([row[0] for row in cur.fetchall() if row[0]])
             cur.close()
             conn.close()
         except Exception as e:
-            print(f"Erreur BDD : {e}")
+            print(f"Erreur BDD lecture : {e}")
 
+    # 2. Détection des mots interdits
     mots_du_message = content.split()
-    if any(word in content for word in mots_interdits):
+    if any(word in mots_du_message or word in content for word in mots_interdits):
         await message.delete()
         user_id = str(message.author.id)
-        
         count = 1
+
         if DATABASE_URL:
             try:
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
-                
-                # Récupérer la valeur actuelle
-                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
-                row = cur.fetchone()
-                current_count = row[0] if row else 0
 
-                if current_count >= 3:
-                    count = current_count
-                else:
-                    # Incrémenter proprement + 1
-                    cur.execute('''
-                        INSERT INTO warnings (user_id, count, updated_at) 
-                        VALUES (%s, 1, CURRENT_TIMESTAMP)
-                        ON CONFLICT (user_id) 
-                        DO UPDATE SET 
-                            count = warnings.count + 1, 
-                            updated_at = CURRENT_TIMESTAMP
-                        RETURNING count;
-                    ''', (user_id,))
-                    count = cur.fetchone()[0]
+                # Requête atomique PostgreSQL : Insère 1 ou ajoute +1 (bloqué à 3 max)
+                cur.execute('''
+                    INSERT INTO warnings (user_id, count, updated_at)
+                    VALUES (%s, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET 
+                        count = LEAST(warnings.count + 1, 3),
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING count;
+                ''', (user_id,))
                 
+                count = cur.fetchone()[0]
                 conn.commit()
                 cur.close()
                 conn.close()
             except Exception as e:
                 print(f"Erreur BDD lors du warn : {e}")
 
-        # Affichage selon le nombre d'avertissements
+        # 3. Traitement de l'avertissement / Sanction
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
@@ -363,9 +358,15 @@ async def on_message(message: discord.Message):
                 view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
                 await mod_channel.send(embed=embed, view=view)
 
-            await message.channel.send(f"🚨 {message.author.mention}, vous avez atteint la limite de 3 avertissements. Une demande de bannissement a été transmise à la modération.")
+            await message.channel.send(
+                f"🚨 {message.author.mention}, vous avez atteint la limite de 3 avertissements. Une demande de bannissement a été transmise à la modération."
+            )
         else:
-            await message.channel.send(f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)", delete_after=10)
+            await message.channel.send(
+                f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)",
+                delete_after=10
+            )
+
     await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
