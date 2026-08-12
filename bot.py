@@ -177,7 +177,7 @@ async def check_youtube():
                 content_type = "📱 **Nouveau Short**" if is_short else "🎬 **Nouvelle Vidéo**"
                 
                 await channel.send(
-                    f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 {content_type} de GTGaming est disponible ! **{latest_video.title}**\n{video_url}"
+                    f"Salut Tout le monde <@&{ROLE_ID}> ! 👋 {content_type} de GTGaming est disponible ! **\n{latest_video.title}**\n{video_url}"
                 )
         LAST_VIDEO_ID = video_id
 
@@ -371,20 +371,6 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
-@bot.tree.command(name="test", description="Test des embeds")
-async def test_embed(interaction: discord.Interaction, member: discord.Member):
-    embed = discord.Embed(
-        title="Test Title",
-        description="Description de l'embed",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Python", value="Apprendre le python en s'amusant", inline=False)
-    embed.add_field(name="Web", value="Apprendre le web en s'amusant", inline=False)
-    embed.set_footer(text="Bas de message")
-    embed.set_image(url="https://pixabay.com/fr/images/download/muhammadsaqii786-youtube-6621791_1920.jpg")
-
-    await interaction.response.send_message(embed=embed)
-
 @bot.tree.command(name="warnguy", description="Alerter une personne")
 @discord.app_commands.default_permissions(ban_members=True)
 async def warnguy(interaction: discord.Interaction, member: discord.Member):
