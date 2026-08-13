@@ -295,7 +295,99 @@ async def setup_roles(ctx):
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignorer les messages des bots ou les messages privés
+    if message.author.bot or not message.guild:
+        return
 
+    content = message.content.lower()
+
+    # 1. Récupération des mots interdits (filtrage des chaînes vides)
+    mots_interdits = [w.lower().strip() for w in OBSCENE_WORDS if w and w.strip()]
+    
+    if DATABASE_URL:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            cur = conn.cursor()
+            cur.execute("SELECT word FROM banned_words")
+            mots_bdd = [row[0].lower().strip() for row in cur.fetchall() if row[0]]
+            mots_interdits.extend(mots_bdd)
+            cur.close()
+            conn.close()
+        except Exception as e:
+            print(f"Erreur BDD lecture : {e}")
+
+    # 2. Détection si le message contient un mot interdit
+    mots_du_message = content.split()
+    est_interdit = False
+
+    for word in mots_interdits:
+        if word in mots_du_message or word in content:
+            est_interdit = True
+            break
+
+    if est_interdit:
+        try:
+            await message.delete()
+        except Exception as e:
+            print(f"Erreur lors de la suppression du message : {e}")
+
+        user_id = str(message.author.id)
+        count = 1
+
+        # 3. Mettre à jour les avertissements en BDD
+        if DATABASE_URL:
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                cur = conn.cursor()
+
+                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+
+                if row is not None:
+                    count = min(row[0] + 1, 3)
+                    cur.execute(
+                        "UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+                        (count, user_id)
+                    )
+                else:
+                    count = 1
+                    cur.execute(
+                        "INSERT INTO warnings (user_id, count, updated_at) VALUES (%s, 1, CURRENT_TIMESTAMP)",
+                        (user_id,)
+                    )
+
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"Erreur BDD ecriture warn : {e}")
+
+        # 4. Envoi de l'avertissement ou sanction
+        if count >= 3:
+            mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+            if mod_channel:
+                embed = discord.Embed(
+                    title="🚨 Demande de Bannissement requise",
+                    description=f"L'utilisateur {message.author.mention} a atteint **3/3 avertissements**.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
+                view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
+                await mod_channel.send(embed=embed, view=view)
+
+            await message.channel.send(
+                f"🚨 {message.author.mention}, vous avez atteint la limite de 3 avertissements. Une demande de bannissement a été transmise à la modération."
+            )
+        else:
+            await message.channel.send(
+                f"⚠️ {message.author.mention}, attention aux propos tenus ! ({count}/3)",
+                delete_after=10
+            )
+
+    # Indispensable pour continuer à traiter les autres commandes
+    await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
 @bot.tree.command(name="warnguy", description="Alerter une personne")
