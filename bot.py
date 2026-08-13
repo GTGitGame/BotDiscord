@@ -90,36 +90,120 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- VUE DE MODÉRATION (DEMANDE DE BAN POUR 3 WARNS) ---
+# --- VUE DE MODÉRATION (3 WARNS / AUTO-MOD) ---
 class BanRequestView(View):
     def __init__(self, target_member: discord.Member, reason: str):
         super().__init__(timeout=None)
         self.target_member = target_member
         self.reason = reason
 
-    @discord.ui.button(label="🔨 Bannir le membre", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="🔨 Bannir le membre", style=discord.ButtonStyle.danger, custom_id="ban_req_confirm")
     async def confirm_ban(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.ban_members:
-            return await interaction.response.send_message("Tu n'as pas la permission d'exécuter cette action.", ephemeral=True)
+            return await interaction.response.send_message("❌ Tu n'as pas la permission de bannir des membres.", ephemeral=True)
         
-        await self.target_member.ban(reason=f"3 Avertissements - Validé par {interaction.user.name}")
-        await interaction.response.send_message(f"✅ {self.target_member.mention} a été banni du serveur par {interaction.user.mention}.")
-        self.stop()
+        try:
+            # MP au membre avant le ban
+            try:
+                await self.target_member.send(
+                    f"⚠️ Vous avez été banni du serveur **{interaction.guild.name}**.\n**Raison :** {self.reason}"
+                )
+            except Exception:
+                pass
 
-    @discord.ui.button(label="❌ Réinitialiser avertissements", style=discord.ButtonStyle.secondary)
-    async def reset_warns(self, interaction: discord.Interaction, button: Button):
+            await self.target_member.ban(reason=f"{self.reason} - Validé par {interaction.user.name}")
+            
+            # Enregistrement en BDD
+            if DATABASE_URL:
+                try:
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)",
+                        (str(self.target_member), self.reason, f"AutoMod (3 warns) - Approuvé par {interaction.user.name}")
+                    )
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                except Exception as e:
+                    print(f"Erreur BDD enregistrement ban : {e}")
+
+            for child in self.children:
+                child.disabled = True
+
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.dark_red()
+            embed.title = "🔨 Bannissement Confirmé & Exécuté"
+            embed.add_field(name="🛡️ Action réalisée par", value=interaction.user.mention, inline=False)
+
+            await interaction.response.edit_message(embed=embed, view=self)
+            await interaction.followup.send(f"✅ {self.target_member.mention} a été banni avec succès.")
+
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Erreur lors du bannissement : {e}", ephemeral=True)
+
+    @discord.ui.button(label="🔍 Recherche Avancée", style=discord.ButtonStyle.primary, custom_id="ban_req_search")
+    async def advanced_search(self, interaction: discord.Interaction, button: Button):
         if not interaction.user.guild_permissions.ban_members:
-            return await interaction.response.send_message("Tu n'as pas la permission d'exécuter cette action.", ephemeral=True)
+            return await interaction.response.send_message("❌ Tu n'as pas la permission d'accéder aux infos de modération.", ephemeral=True)
 
+        user_id = str(self.target_member.id)
+        current_warns = 0
+        total_bans = 0
+
+        # Récupération des informations complémentaires en BDD
         if DATABASE_URL:
-            conn = psycopg2.connect(DATABASE_URL)
-            cur = conn.cursor()
-            cur.execute("DELETE FROM warnings WHERE user_id = %s", (str(self.target_member.id),))
-            conn.commit()
-            cur.close()
-            conn.close()
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                cur = conn.cursor()
+                
+                # Récupérer les warns actuels
+                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
+                row_warn = cur.fetchone()
+                if row_warn:
+                    current_warns = row_warn[0]
 
-        await interaction.response.send_message(f"🔄 Avertissements réinitialisés pour {self.target_member.mention}.")
-        self.stop()
+                # Récupérer le nombre de bans historiques
+                cur.execute("SELECT COUNT(*) FROM bans WHERE user_name LIKE %s", (f"%{self.target_member.name}%",))
+                row_bans = cur.fetchone()
+                if row_bans:
+                    total_bans = row_bans[0]
+
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"Erreur BDD lors de la recherche avancée : {e}")
+
+        # Formater les dates
+        joined_at = self.target_member.joined_at.strftime("%d/%m/%Y à %H:%M") if self.target_member.joined_at else "Inconnue"
+        created_at = self.target_member.created_at.strftime("%d/%m/%Y à %H:%M")
+        
+        # Liste des rôles (excluant @everyone)
+        roles_list = [role.mention for role in self.target_member.roles if role.name != "@everyone"]
+        roles_str = ", ".join(roles_list) if roles_list else "Aucun rôle particulier"
+
+        # Construction de l'embed de recherche détaillée
+        embed = discord.Embed(
+            title=f"🔎 Rapport de Recherche Avancée : {self.target_member.display_name}",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
+        )
+        embed.set_thumbnail(url=self.target_member.display_avatar.url)
+        embed.add_field(name="🆔 Identifiant (ID)", value=f"`{self.target_member.id}`", inline=True)
+        embed.add_field(name="👤 Nom d'utilisateur", value=f"`{self.target_member.name}`", inline=True)
+        embed.add_field(name="🏷️ Surnom serveur", value=f"`{self.target_member.nick or 'Aucun'}`", inline=True)
+        
+        embed.add_field(name="📅 Création du compte", value=f"`{created_at}`", inline=True)
+        embed.add_field(name="📥 Rejoint le serveur", value=f"`{joined_at}`", inline=True)
+        embed.add_field(name="⚡ Statut de Bot", value="Oui" if self.target_member.bot else "Non", inline=True)
+
+        embed.add_field(name="⚠️ Avertissements actifs (BDD)", value=f"**{current_warns}/3**", inline=True)
+        embed.add_field(name="📜 Historique de bans (BDD)", value=f"**{total_bans}** fois", inline=True)
+        embed.add_field(name="🛡️ Rôle le plus élevé", value=self.target_member.top_role.mention, inline=True)
+
+        embed.add_field(name="🎭 Tous les rôles", value=roles_str, inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- ÉVÉNEMENT ON_READY ---
 @bot.event
@@ -363,10 +447,10 @@ async def on_message(message: discord.Message):
             count = memory_warnings[user_id]
 
         # 4. Rapport détaillé dans Modo-Logs si 3/3 avertissements
+# 4. Rapport détaillé dans Modo-Logs si 3/3 avertissements
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
-                # Récupération du nombre de bans précédents en BDD
                 previous_bans_count = 0
                 if DATABASE_URL:
                     try:
@@ -381,7 +465,6 @@ async def on_message(message: discord.Message):
                     except Exception as e:
                         print(f"Erreur calcul des anciens bans : {e}")
 
-                # Formatage des dates
                 joined_at = message.author.joined_at.strftime("%d/%m/%Y à %H:%M") if message.author.joined_at else "Inconnue"
                 created_at = message.author.created_at.strftime("%d/%m/%Y à %H:%M")
 
@@ -397,6 +480,13 @@ async def on_message(message: discord.Message):
                 embed.add_field(name="🕒 Création du compte", value=f"`{created_at}`", inline=True)
                 embed.add_field(name="🔨 Bans précédents en BDD", value=f"**{previous_bans_count}**", inline=True)
                 embed.add_field(name="💬 Dernier message incriminé", value=f"```{message.content}```", inline=False)
+                
+                # Instruction explicite pour la réinitialisation/gestion des avertissements
+                embed.add_field(
+                    name="💡 Gestion des Avertissements",
+                    value=f"Pour réduire ou réinitialiser les avertissements de ce membre, utilisez la commande :\n`/unwarn member:{message.author.mention} nombre:<1 à 3>`",
+                    inline=False
+                )
 
                 view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
                 await mod_channel.send(embed=embed, view=view)
