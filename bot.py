@@ -297,7 +297,6 @@ async def setup_roles(ctx):
 # Dictionnaire de secours en mémoire si la BDD flanche
 memory_warnings = {}
 
-# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -332,7 +331,7 @@ async def on_message(message: discord.Message):
         user_id = str(message.author.id)
         count = None
 
-        # 3. Mettre à jour en BDD avec requête UPSERT (1 seule étape atomique)
+        # 3. Mettre à jour en BDD avec requête UPSERT
         if DATABASE_URL:
             try:
                 conn = psycopg2.connect(DATABASE_URL)
@@ -358,21 +357,47 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"❌ ERREUR CRITIQUE BDD (Ecriture Warn) : {e}")
 
-        # 4. Secours en mémoire si la BDD n'a pas répondu
+        # Secours en mémoire si la BDD est indisponible
         if count is None:
             memory_warnings[user_id] = min(memory_warnings.get(user_id, 0) + 1, 3)
             count = memory_warnings[user_id]
 
-        # 5. Sanction / Rapport dans le salon Mod-Logs
+        # 4. Rapport détaillé dans Modo-Logs si 3/3 avertissements
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
+                # Récupération du nombre de bans précédents en BDD
+                previous_bans_count = 0
+                if DATABASE_URL:
+                    try:
+                        conn = psycopg2.connect(DATABASE_URL)
+                        cur = conn.cursor()
+                        cur.execute("SELECT COUNT(*) FROM bans WHERE user_name LIKE %s", (f"%{message.author.name}%",))
+                        row_bans = cur.fetchone()
+                        if row_bans:
+                            previous_bans_count = row_bans[0]
+                        cur.close()
+                        conn.close()
+                    except Exception as e:
+                        print(f"Erreur calcul des anciens bans : {e}")
+
+                # Formatage des dates
+                joined_at = message.author.joined_at.strftime("%d/%m/%Y à %H:%M") if message.author.joined_at else "Inconnue"
+                created_at = message.author.created_at.strftime("%d/%m/%Y à %H:%M")
+
                 embed = discord.Embed(
-                    title="🚨 Demande de Bannissement requise",
+                    title="🚨 Demande de Bannissement Requise (AutoMod)",
                     description=f"L'utilisateur {message.author.mention} a atteint **3/3 avertissements**.",
-                    color=discord.Color.red()
+                    color=discord.Color.red(),
+                    timestamp=datetime.datetime.now(datetime.timezone.utc)
                 )
-                embed.add_field(name="Dernier message suspect", value=f"`{message.content}`")
+                embed.set_thumbnail(url=message.author.display_avatar.url)
+                embed.add_field(name="👤 Membre", value=f"{message.author} (`{message.author.id}`)", inline=False)
+                embed.add_field(name="📅 Arrivée sur le serveur", value=f"`{joined_at}`", inline=True)
+                embed.add_field(name="🕒 Création du compte", value=f"`{created_at}`", inline=True)
+                embed.add_field(name="🔨 Bans précédents en BDD", value=f"**{previous_bans_count}**", inline=True)
+                embed.add_field(name="💬 Dernier message incriminé", value=f"```{message.content}```", inline=False)
+
                 view = BanRequestView(target_member=message.author, reason="3 avertissements (AutoMod)")
                 await mod_channel.send(embed=embed, view=view)
 
@@ -394,12 +419,61 @@ async def warnguy(interaction: discord.Interaction, member: discord.Member):
     await interaction.response.send_message("Alerte envoyée !", ephemeral=True)
     await member.send("Tu as reçu une alerte.")
 
-@bot.tree.command(name="banguy", description="Bannir une personne")
+@bot.tree.command(name="banguy", description="Bannir un membre et enregistrer le rapport dans les logs")
 @discord.app_commands.default_permissions(ban_members=True)
-async def banguy(interaction: discord.Interaction, member: discord.Member):
-    await interaction.response.send_message("Ban effectué !", ephemeral=True)
-    await member.send("Tu as été banni.")
-    await member.ban(reason="Banni via commande staff")
+async def banguy(interaction: discord.Interaction, member: discord.Member, raison: str):
+    if member.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
+        return await interaction.response.send_message("❌ Vous ne pouvez pas bannir ce membre car son rôle est supérieur ou égal au vôtre.", ephemeral=True)
+
+    try:
+        # Envoi d'un MP d'avertissement au membre avant le ban
+        try:
+            await member.send(f"⚠️ Vous avez été banni du serveur **{interaction.guild.name}** par {interaction.user.name}.\n**Raison :** {raison}")
+        except Exception:
+            pass
+
+        # Exécution du bannissement
+        await member.ban(reason=f"{raison} (Par {interaction.user.name})")
+
+        # Enregistrement du ban dans la base de données
+        if DATABASE_URL:
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO bans (user_name, reason, proof) VALUES (%s, %s, %s)",
+                    (str(member), raison, f"Commande /banguy par {interaction.user.name}")
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"Erreur enregistrement ban BDD : {e}")
+
+        # Rapport dans le salon Mod-Logs
+        mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+        if mod_channel:
+            joined_at = member.joined_at.strftime("%d/%m/%Y à %H:%M") if member.joined_at else "Inconnue"
+            created_at = member.created_at.strftime("%d/%m/%Y à %H:%M")
+
+            embed = discord.Embed(
+                title="🔨 Bannissement Effectué",
+                color=discord.Color.dark_red(),
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="👤 Membre banni", value=f"{member} (`{member.id}`)", inline=False)
+            embed.add_field(name="🛡️ Modérateur", value=interaction.user.mention, inline=True)
+            embed.add_field(name="📅 Arrivée sur le serveur", value=f"`{joined_at}`", inline=True)
+            embed.add_field(name="🕒 Création du compte", value=f"`{created_at}`", inline=True)
+            embed.add_field(name="📝 Raison", value=f"```{raison}```", inline=False)
+
+            await mod_channel.send(embed=embed)
+
+        await interaction.response.send_message(f"✅ **{member.name}** a été banni avec succès.\n📝 **Raison :** {raison}", ephemeral=True)
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Impossible de bannir le membre : {e}", ephemeral=True)
 
 @bot.tree.command(name="youtube", description="Affiche ma chaine youtube")
 async def youtube(interaction: discord.Interaction):
