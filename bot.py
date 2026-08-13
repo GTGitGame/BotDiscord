@@ -76,7 +76,6 @@ def init_db():
             date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )''')
         cur.execute('''CREATE TABLE IF NOT EXISTS banned_words (word TEXT PRIMARY KEY)''')
-        cur.execute("TRUNCATE TABLE banned_words;")
         conn.commit()
         cur.close()
         conn.close()
@@ -295,17 +294,16 @@ async def setup_roles(ctx):
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
-    # Ignorer les messages des bots ou les messages privés
     if message.author.bot or not message.guild:
         return
 
     content = message.content.lower()
 
-    # 1. Récupération des mots interdits (filtrage des chaînes vides)
+    # 1. Récupération des mots interdits
     mots_interdits = [w.lower().strip() for w in OBSCENE_WORDS if w and w.strip()]
-    
     if DATABASE_URL:
         try:
             conn = psycopg2.connect(DATABASE_URL)
@@ -316,27 +314,22 @@ async def on_message(message: discord.Message):
             cur.close()
             conn.close()
         except Exception as e:
-            print(f"Erreur BDD lecture : {e}")
+            print(f"Erreur BDD lecture mots : {e}")
 
-    # 2. Détection si le message contient un mot interdit
+    # 2. Vérification si un mot interdit est présent
     mots_du_message = content.split()
-    est_interdit = False
-
-    for word in mots_interdits:
-        if word in mots_du_message or word in content:
-            est_interdit = True
-            break
+    est_interdit = any(word in mots_du_message or word in content for word in mots_interdits if word)
 
     if est_interdit:
         try:
             await message.delete()
         except Exception as e:
-            print(f"Erreur lors de la suppression du message : {e}")
+            print(f"Erreur suppression message : {e}")
 
         user_id = str(message.author.id)
         count = 1
 
-        # 3. Mettre à jour les avertissements en BDD
+        # 3. Gestion du compteur de warns en BDD
         if DATABASE_URL:
             try:
                 conn = psycopg2.connect(DATABASE_URL)
@@ -364,7 +357,7 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"Erreur BDD ecriture warn : {e}")
 
-        # 4. Envoi de l'avertissement ou sanction
+        # 4. Avertissement / Demande de Ban
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
@@ -386,7 +379,6 @@ async def on_message(message: discord.Message):
                 delete_after=10
             )
 
-    # Indispensable pour continuer à traiter les autres commandes
     await bot.process_commands(message)
 
 # --- COMMANDES SLASH (TREE) ---
