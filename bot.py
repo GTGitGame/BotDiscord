@@ -381,12 +381,15 @@ async def setup_roles(ctx):
 # Dictionnaire de secours en mémoire si la BDD flanche
 memory_warnings = {}
 
+# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
         return
 
-    content = message.content.lower()
+    # Nettoyage et découpage du message en mots individuels sans ponctuation
+    content_raw = message.content.lower()
+    content_words = [word.strip(".,!?\"'()[]{}") for word in content_raw.split()]
 
     # 1. Récupération des mots interdits
     mots_interdits = [w.lower().strip() for w in OBSCENE_WORDS if w and w.strip()]
@@ -402,9 +405,8 @@ async def on_message(message: discord.Message):
         except Exception as e:
             print(f"⚠️ Erreur BDD lecture mots : {e}")
 
-    # 2. Vérification si un mot interdit est présent
-    mots_du_message = content.split()
-    est_interdit = any(word in mots_du_message or word in content for word in mots_interdits if word)
+    # 2. Vérification STRICTE mot par mot (évite de bloquer 'activité' ou des phrases normales)
+    est_interdit = any(bad_word in content_words for bad_word in mots_interdits if bad_word)
 
     if est_interdit:
         try:
@@ -415,7 +417,7 @@ async def on_message(message: discord.Message):
         user_id = str(message.author.id)
         count = None
 
-        # 3. Mettre à jour en BDD avec requête UPSERT
+        # 3. Mettre à jour en BDD avec requête UPSERT (atomique)
         if DATABASE_URL:
             try:
                 conn = psycopg2.connect(DATABASE_URL)
@@ -441,13 +443,12 @@ async def on_message(message: discord.Message):
             except Exception as e:
                 print(f"❌ ERREUR CRITIQUE BDD (Ecriture Warn) : {e}")
 
-        # Secours en mémoire si la BDD est indisponible
+        # Secours en mémoire si la BDD n'a pas répondu
         if count is None:
             memory_warnings[user_id] = min(memory_warnings.get(user_id, 0) + 1, 3)
             count = memory_warnings[user_id]
 
         # 4. Rapport détaillé dans Modo-Logs si 3/3 avertissements
-# 4. Rapport détaillé dans Modo-Logs si 3/3 avertissements
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
@@ -481,7 +482,6 @@ async def on_message(message: discord.Message):
                 embed.add_field(name="🔨 Bans précédents en BDD", value=f"**{previous_bans_count}**", inline=True)
                 embed.add_field(name="💬 Dernier message incriminé", value=f"```{message.content}```", inline=False)
                 
-                # Instruction explicite pour la réinitialisation/gestion des avertissements
                 embed.add_field(
                     name="💡 Gestion des Avertissements",
                     value=f"Pour réduire ou réinitialiser les avertissements de ce membre, utilisez la commande :\n`/unwarn member:{message.author.mention} nombre:<1 à 3>`",
@@ -710,25 +710,23 @@ async def history(interaction: discord.Interaction):
         )
     await interaction.response.send_message(embed=embed)
 
-# --- COMMANDE POUR RETIRER DES AVERTISSEMENTS ---
-@bot.tree.command(name="unwarn", description="Retirer de 1 à 3 avertissements à un membre")
-@discord.app_commands.default_permissions(ban_members=True)
-@discord.app_commands.choices(nombre=[
-    discord.app_commands.Choice(name="1 avertissement", value=1),
-    discord.app_commands.Choice(name="2 avertissements", value=2),
-    discord.app_commands.Choice(name="3 avertissements (Réinitialiser)", value=3)
-])
-async def unwarn(interaction: discord.Interaction, member: discord.Member, nombre: int):
-    if not DATABASE_URL:
-        return await interaction.response.send_message("❌ La base de données n'est pas configurée.", ephemeral=True)
-
+@bot.tree.command(name="unwarn", description="Réduire ou réinitialiser les avertissements d'un membre")
+@discord.app_commands.default_permissions(administrator=True)
+async def unwarn(interaction: discord.Interaction, member: discord.Member, nombre: int = 1):
     user_id = str(member.id)
+    
+    # Nettoyage de la mémoire de secours s'il y a lieu
+    if user_id in memory_warnings:
+        memory_warnings[user_id] = max(0, memory_warnings[user_id] - nombre)
+
+    if not DATABASE_URL:
+        return await interaction.response.send_message("❌ Base de données non configurée.", ephemeral=True)
 
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        
-        # Récupération des warns actuels
+
+        # Récupération du compteur actuel
         cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
 
@@ -737,22 +735,21 @@ async def unwarn(interaction: discord.Interaction, member: discord.Member, nombr
             conn.close()
             return await interaction.response.send_message(f"ℹ️ {member.mention} n'a aucun avertissement actif.", ephemeral=True)
 
-        current_warns = row[0]
-        new_warns = max(0, current_warns - nombre)
+        current_count = row[0]
+        new_count = max(0, current_count - nombre)
 
-        if new_warns == 0:
+        if new_count <= 0:
             cur.execute("DELETE FROM warnings WHERE user_id = %s", (user_id,))
+            msg = f"🧹 Tous les avertissements de {member.mention} ont été effacés (**0/3**)."
         else:
-            cur.execute("UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s", (new_warns, user_id))
+            cur.execute("UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s", (new_count, user_id))
+            msg = f"📉 **{nombre}** avertissement(s) retiré(s) à {member.mention}. Nouveau total : **{new_count}/3**."
 
         conn.commit()
         cur.close()
         conn.close()
 
-        await interaction.response.send_message(
-            f"✅ **{nombre}** avertissement(s) retiré(s) à {member.mention}.\n"
-            f"📊 Nouveau total : **{new_warns}/3** avertissement(s)."
-        )
+        await interaction.response.send_message(msg)
 
     except Exception as e:
         await interaction.response.send_message(f"❌ Erreur BDD : {e}", ephemeral=True)
