@@ -294,6 +294,9 @@ async def setup_roles(ctx):
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
+# Dictionnaire de secours en mémoire si la BDD flanche
+memory_warnings = {}
+
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
@@ -314,7 +317,7 @@ async def on_message(message: discord.Message):
             cur.close()
             conn.close()
         except Exception as e:
-            print(f"Erreur BDD lecture mots : {e}")
+            print(f"⚠️ Erreur BDD lecture mots : {e}")
 
     # 2. Vérification si un mot interdit est présent
     mots_du_message = content.split()
@@ -324,40 +327,43 @@ async def on_message(message: discord.Message):
         try:
             await message.delete()
         except Exception as e:
-            print(f"Erreur suppression message : {e}")
+            print(f"⚠️ Erreur suppression message : {e}")
 
         user_id = str(message.author.id)
-        count = 1
+        count = None
 
-        # 3. Gestion du compteur de warns en BDD
+        # 3. Mettre à jour en BDD avec requête UPSERT (1 seule étape atomique)
         if DATABASE_URL:
             try:
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
 
-                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
-                row = cur.fetchone()
+                cur.execute('''
+                    INSERT INTO warnings (user_id, count, updated_at)
+                    VALUES (%s, 1, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id) 
+                    DO UPDATE SET 
+                        count = LEAST(warnings.count + 1, 3),
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING count;
+                ''', (user_id,))
 
-                if row is not None:
-                    count = min(row[0] + 1, 3)
-                    cur.execute(
-                        "UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
-                        (count, user_id)
-                    )
-                else:
-                    count = 1
-                    cur.execute(
-                        "INSERT INTO warnings (user_id, count, updated_at) VALUES (%s, 1, CURRENT_TIMESTAMP)",
-                        (user_id,)
-                    )
+                row = cur.fetchone()
+                if row:
+                    count = row[0]
 
                 conn.commit()
                 cur.close()
                 conn.close()
             except Exception as e:
-                print(f"Erreur BDD ecriture warn : {e}")
+                print(f"❌ ERREUR CRITIQUE BDD (Ecriture Warn) : {e}")
 
-        # 4. Avertissement / Demande de Ban
+        # 4. Secours en mémoire si la BDD n'a pas répondu
+        if count is None:
+            memory_warnings[user_id] = min(memory_warnings.get(user_id, 0) + 1, 3)
+            count = memory_warnings[user_id]
+
+        # 5. Sanction / Rapport dans le salon Mod-Logs
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
