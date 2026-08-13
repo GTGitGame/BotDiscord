@@ -33,15 +33,17 @@ TRIGGER_VOICE_NAME = "-- Créé ton Vocal privé Ici --"
 temp_voice_channels = set()
 
 # Mots obscènes/interdits par défaut (complétés par la BDD)
-OBSCENE_WORDS = [""]
+OBSCENE_WORDS = []
 
 # Texte officiel du Règlement
 REGLEMENT_TEXT = """📜 **RÈGLEMENT DU SERVEUR**
 
-1️⃣ **Respect & Politesse** : Pas d'insultes, de propos haineux, racistes ou obscènes.
-2️⃣ **Pas de Spam / Pub** : Le spam et les liens non autorisés sont strictement interdits.
-3️⃣ **Contenu approprié** : Gardez les échanges adaptés à tous les publics (pas de NSFW/contenu explicite).
-4️⃣ **Écoute de l'équipe** : Respectez les décisions des modérateurs et des administrateurs.
+1️⃣ **Traitez tout le monde avec respect.** Aucun harcèlement, sexisme, racisme ou discours de haine ne sera toléré.
+2️⃣ **Pas de spam ni d'autopromotion** (invitations de serveurs, publicités, etc.) sans l'autorisation d'un modérateur du serveur, y compris via les MP envoyés aux autres membres.
+3️⃣ **Pas de contenu obscène ou soumis à une limite d'âge**, qu'il s'agisse de texte, d'images ou de liens mettant en scène de la nudité, du sexe, de l'hyperviolence ou tout autre contenu explicite perturbant.
+4️⃣ **Nous ne sommes en aucun cas responsable d'arnaque** Cependant nous punnisont tout de même les personnes arnaquant/scammant avec une sanction plus ou moins sévère en fonction des cas.
+5️⃣ Si tu remarques quelque chose de **contraire aux règles** ou qui te rend mal à l'aise, informes-en les modérateurs. Nous voulons que ce serveur soit accueillant pour tout le monde !
+6️⃣ **Pas de Mention/MP** (sauf si autorisé) pour les grades suivants: Modérateur, Fondateur et animations (En résumé tout les grades du staff)! Dans le cas d'une mention vous n'aurez droit qu'a 3 avertissement après le 3 ème un banissement temporaire voir à vie serait envisageable.
 
 ⚠️ *En cas d'accumulation de 3 avertissements, une demande de bannissement sera soumise à l'équipe de modération.*"""
 
@@ -293,8 +295,6 @@ async def setup_roles(ctx):
     print(f"Nouveau MESSAGE_ID à copier dans le code : {message.id}")
 
 # --- AUTO-MODÉRATION SUR LES MESSAGES ---
-# --- AUTO-MODÉRATION SUR LES MESSAGES ---
-# --- AUTO-MODÉRATION SUR LES MESSAGES ---
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or not message.guild:
@@ -302,7 +302,7 @@ async def on_message(message: discord.Message):
 
     content = message.content.lower()
 
-    # 1. Récupération de la liste des mots interdits
+    # Récupération de la liste des mots interdits
     mots_interdits = [w for w in OBSCENE_WORDS if w]
     if DATABASE_URL:
         try:
@@ -315,9 +315,9 @@ async def on_message(message: discord.Message):
         except Exception as e:
             print(f"Erreur BDD lecture : {e}")
 
-    # 2. Détection des mots interdits
+    # Détection des mots interdits (seulement si la liste n'est pas vide)
     mots_du_message = content.split()
-    if any(word in mots_du_message or word in content for word in mots_interdits):
+    if mots_interdits and any(word in mots_du_message or word in content for word in mots_interdits):
         await message.delete()
         user_id = str(message.author.id)
         count = 1
@@ -327,25 +327,30 @@ async def on_message(message: discord.Message):
                 conn = psycopg2.connect(DATABASE_URL)
                 cur = conn.cursor()
 
-                # Requête atomique PostgreSQL : Insère 1 ou ajoute +1 (bloqué à 3 max)
-                cur.execute('''
-                    INSERT INTO warnings (user_id, count, updated_at)
-                    VALUES (%s, 1, CURRENT_TIMESTAMP)
-                    ON CONFLICT (user_id) 
-                    DO UPDATE SET 
-                        count = LEAST(warnings.count + 1, 3),
-                        updated_at = CURRENT_TIMESTAMP
-                    RETURNING count;
-                ''', (user_id,))
-                
-                count = cur.fetchone()[0]
+                # 1. Vérifier si l'utilisateur a déjà des avertissements
+                cur.execute("SELECT count FROM warnings WHERE user_id = %s", (user_id,))
+                row = cur.fetchone()
+
+                if row is not None:
+                    count = row[0] + 1
+                    cur.execute(
+                        "UPDATE warnings SET count = %s, updated_at = CURRENT_TIMESTAMP WHERE user_id = %s",
+                        (count, user_id)
+                    )
+                else:
+                    count = 1
+                    cur.execute(
+                        "INSERT INTO warnings (user_id, count, updated_at) VALUES (%s, 1, CURRENT_TIMESTAMP)",
+                        (user_id,)
+                    )
+
                 conn.commit()
                 cur.close()
                 conn.close()
             except Exception as e:
                 print(f"Erreur BDD lors du warn : {e}")
 
-        # 3. Traitement de l'avertissement / Sanction
+        # Envoi de l'avertissement
         if count >= 3:
             mod_channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
             if mod_channel:
@@ -448,7 +453,7 @@ async def verif(interaction: discord.Interaction, member: discord.Member):
     await msg.add_reaction("❌")
 
     await interaction.response.send_message(
-        f"Salut {interaction.user.mention} ! Pour devenir {role_mention} tu dois répondre à ce questionnaire. En cas d'acceptation, tu recevras un MP alors sois à l'affût 😉! "
+        f"Salut {interaction.user.mention} ! Pour devenir {role_mention} tu dois répondre à ce [questionnaire](https://forms.cloud.microsoft/r/JUYHq9z6Mc). En cas d'acceptation, tu recevras un MP alors sois à l'affût 😉!"
         "⚠️ Attention: une fois certifié, la modération de ton compte sera réduite mais si tu enfreins une règle, ce sera tolérance zéro (Ban jusqu'à nouvel ordre!). ⚠️",
         ephemeral=True
     )
